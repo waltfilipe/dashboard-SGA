@@ -1352,10 +1352,14 @@ def draw_touches_heatmap(df):
     fig, ax, pitch = _base_pitch()
     if len(df) > 0:
         cmap_touch = LinearSegmentedColormap.from_list(
-            "touch", ["#1a1a2e", "#27306b", "#3b82f6", "#22d3ee", "#fde047"]
+            "touch", ["#252845", "#2e3560", "#3b82f6", "#22d3ee", "#fde047"]
         )
         bin_stat = pitch.bin_statistic(df["x"].values, df["y"].values, statistic="count", bins=(12, 8))
-        mesh = pitch.heatmap(bin_stat, ax=ax, cmap=cmap_touch, edgecolors="#1a1a2e", alpha=0.85, zorder=2)
+        mesh = pitch.heatmap(
+            bin_stat, ax=ax, cmap=cmap_touch,
+            edgecolors="#2a3050", linewidth=0.35,
+            alpha=0.88, zorder=2,
+        )
         cbar = fig.colorbar(mesh, ax=ax, fraction=0.020, pad=0.02, shrink=0.60)
         cbar.set_label("Touches", color="#ffffff", fontsize=8)
         cbar.ax.yaxis.set_tick_params(color="#ffffff", labelsize=7)
@@ -1366,27 +1370,53 @@ def draw_touches_heatmap(df):
 GOAL_WIDTH = 7.32
 GOAL_HEIGHT = 2.44
 
-def _goal_zone_grid(gx, gy, color):
-    """Build a 3x3 goal-mouth mini map (HTML) marking where the shot ended."""
-    col = int(min(2, max(0, gx // (GOAL_WIDTH / 3))))
-    row = int(min(2, max(0, gy // (GOAL_HEIGHT / 3))))
-    row_from_top = 2 - row
-    lines = []
-    for rr in range(3):
-        cells = []
-        for cc in range(3):
-            if rr == row_from_top and cc == col:
-                cells.append(f"<span style='color:{color}'>\u25cf</span>")
+def _goal_mouth_hover_diagram(gx, gy, color):
+    """Mini goleira proporcional (traves + travessão) para o hover."""
+    cols, rows = 11, 4
+    gx_cl = float(np.clip(gx, 0, GOAL_WIDTH))
+    gy_cl = float(np.clip(gy, 0, GOAL_HEIGHT))
+    sc = int(np.clip(gx_cl / GOAL_WIDTH * (cols - 1), 0, cols - 1))
+    sr = int(np.clip(gy_cl / GOAL_HEIGHT * (rows - 1), 0, rows - 1))
+    sr_top = rows - 1 - sr
+    top = "╔" + "═" * cols + "╗"
+    bot = "╚" + "═" * cols + "╝"
+    body = []
+    for r in range(rows):
+        chars = []
+        for c in range(cols):
+            if r == sr_top and c == sc:
+                chars.append(f"<span style='color:{color};font-size:14px'>●</span>")
             else:
-                cells.append("<span style='color:#5b6172'>\u00b7</span>")
-        lines.append("&nbsp;&nbsp;".join(cells))
-    return "<br>".join(lines)
+                chars.append("·")
+        body.append("║" + " ".join(chars) + "║")
+    return "<br>".join([top] + body + [bot])
 
 
-def _plotly_pitch_layout(fig):
+def _goal_frame_plotly_shapes():
+    """Traves, travessão e rede no painel Goal Mouth (eixo x2/y2)."""
+    post = dict(color="rgba(255,255,255,0.95)", width=3)
+    net = dict(color="rgba(255,255,255,0.10)", width=1)
+    ground = dict(color="rgba(255,255,255,0.35)", width=1.5)
+    shapes = [
+        dict(type="rect", x0=0, y0=0, x1=GOAL_WIDTH, y1=GOAL_HEIGHT,
+             xref="x2", yref="y2", fillcolor="rgba(22,28,50,0.75)", line=dict(width=0)),
+        dict(type="line", x0=0, y0=0, x1=0, y1=GOAL_HEIGHT, xref="x2", yref="y2", line=post),
+        dict(type="line", x0=GOAL_WIDTH, y0=0, x1=GOAL_WIDTH, y1=GOAL_HEIGHT, xref="x2", yref="y2", line=post),
+        dict(type="line", x0=0, y0=GOAL_HEIGHT, x1=GOAL_WIDTH, y1=GOAL_HEIGHT, xref="x2", yref="y2", line=post),
+        dict(type="line", x0=0, y0=0, x1=GOAL_WIDTH, y1=0, xref="x2", yref="y2", line=ground),
+    ]
+    for gw in np.linspace(GOAL_WIDTH / 5, 4 * GOAL_WIDTH / 5, 4):
+        shapes.append(dict(type="line", x0=gw, y0=0, x1=gw, y1=GOAL_HEIGHT, xref="x2", yref="y2", line=net))
+    for gh in np.linspace(GOAL_HEIGHT / 3, 2 * GOAL_HEIGHT / 3, 2):
+        shapes.append(dict(type="line", x0=0, y0=gh, x1=GOAL_WIDTH, y1=gh, xref="x2", yref="y2", line=net))
+    return shapes
+
+
+def _plotly_pitch_layout(fig, extra_shapes=None):
     """Apply a simple full-pitch background (StatsBomb coords) on a dark figure."""
     line = "rgba(255,255,255,0.45)"
     dim = "rgba(255,255,255,0.25)"
+    post = dict(color="rgba(255,255,255,0.95)", width=3)
     shapes = [
         dict(type="rect", x0=0, y0=0, x1=FIELD_X, y1=FIELD_Y, line=dict(color=line, width=1.2)),
         dict(type="line", x0=HALF_LINE_X, y0=0, x1=HALF_LINE_X, y1=FIELD_Y, line=dict(color=line, width=1)),
@@ -1394,30 +1424,38 @@ def _plotly_pitch_layout(fig):
              x1=HALF_LINE_X + 9.15, y1=FIELD_Y / 2 + 9.15, line=dict(color=line, width=1)),
         dict(type="rect", x0=102, y0=18, x1=120, y1=62, line=dict(color=line, width=1)),
         dict(type="rect", x0=114, y0=30, x1=120, y1=50, line=dict(color=line, width=1)),
-        dict(type="rect", x0=120, y0=36, x1=122, y1=44, line=dict(color=line, width=1.4)),
+        dict(type="line", x0=120, y0=36, x1=120, y1=44, line=post),
+        dict(type="line", x0=120, y0=36, x1=122, y1=36, line=post),
+        dict(type="line", x0=120, y0=44, x1=122, y1=44, line=post),
         dict(type="rect", x0=0, y0=18, x1=18, y1=62, line=dict(color=line, width=1)),
         dict(type="rect", x0=0, y0=30, x1=6, y1=50, line=dict(color=line, width=1)),
-        dict(type="rect", x0=-2, y0=36, x1=0, y1=44, line=dict(color=line, width=1.4)),
         dict(type="line", x0=FINAL_THIRD_LINE_X, y0=0, x1=FINAL_THIRD_LINE_X, y1=FIELD_Y,
              line=dict(color=dim, width=1, dash="dash")),
     ]
+    if extra_shapes:
+        shapes.extend(extra_shapes)
     fig.update_layout(
         shapes=shapes,
         paper_bgcolor="#1a1a2e", plot_bgcolor="#1a1a2e",
-        height=300, margin=dict(l=8, r=8, t=10, b=10),
-        xaxis=dict(visible=False, range=[-4, 124], constrain="domain"),
+        height=320, margin=dict(l=8, r=8, t=36, b=10),
+        xaxis=dict(visible=False, range=[-4, 124], constrain="domain", domain=[0, 0.66]),
         yaxis=dict(visible=False, range=[-4, 84], scaleanchor="x", scaleratio=1),
+        xaxis2=dict(visible=False, range=[-0.4, GOAL_WIDTH + 0.4], domain=[0.72, 1.0]),
+        yaxis2=dict(visible=False, range=[-0.2, GOAL_HEIGHT + 0.35], scaleanchor="x2", scaleratio=1),
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=0.0, xanchor="left", x=0.0,
                     bgcolor="rgba(26,26,46,0.6)", font=dict(size=9, color="#ffffff")),
         hoverlabel=dict(bgcolor="#11162a", bordercolor="#444466",
                         font=dict(family="monospace", size=12, color="#ffffff"), align="left"),
+        annotations=[
+            dict(text="Goal Mouth", x=0.86, xref="paper", y=1.06, yref="paper",
+                 showarrow=False, font=dict(size=11, color="#a0a0b5")),
+        ],
     )
 
 
 def draw_shots_map(df):
-    """Interactive shots map. Hovering a shot shows a mini goal-mouth map with
-    the goal placement of that specific shot (see _goal_zone_grid)."""
+    """Interactive shots map with a real goal-mouth panel (posts, crossbar, net)."""
     fig = go.Figure()
     groups = [
         ("Goal", df[df["is_goal"]], COLOR_GOAL, "star", 16),
@@ -1429,13 +1467,13 @@ def draw_shots_map(df):
             fig.add_trace(go.Scatter(
                 x=[None], y=[None], mode="markers",
                 marker=dict(size=11, color=color, symbol=symbol, line=dict(color="white", width=1)),
-                name=name, showlegend=True, hoverinfo="skip"
+                name=name, showlegend=True, hoverinfo="skip",
             ))
             continue
         custom = []
         for _, r in gdf.iterrows():
-            grid = _goal_zone_grid(float(r["gx"]), float(r["gy"]), color)
-            header = f"<b style='color:{color}'>{name}</b>  (goal {float(r['gx']):.1f}m, {float(r['gy']):.1f}m)"
+            grid = _goal_mouth_hover_diagram(float(r["gx"]), float(r["gy"]), color)
+            header = f"<b style='color:{color}'>{name}</b> ({float(r['gx']):.1f}m × {float(r['gy']):.1f}m)"
             custom.append([header, grid])
         fig.add_trace(go.Scatter(
             x=gdf["x"], y=gdf["y"], mode="markers",
@@ -1443,7 +1481,14 @@ def draw_shots_map(df):
             name=name, customdata=custom,
             hovertemplate="%{customdata[0]}<br>— goal placement —<br>%{customdata[1]}<extra></extra>",
         ))
-    _plotly_pitch_layout(fig)
+        fig.add_trace(go.Scatter(
+            x=gdf["gx"], y=gdf["gy"], mode="markers",
+            xaxis="x2", yaxis="y2",
+            marker=dict(size=max(8, size - 2), color=color, symbol=symbol,
+                        line=dict(color="white", width=1), opacity=0.9),
+            name=name, showlegend=False, hoverinfo="skip",
+        ))
+    _plotly_pitch_layout(fig, extra_shapes=_goal_frame_plotly_shapes())
     return fig
 
 # PLOTLY CHARTS
@@ -1543,53 +1588,66 @@ def draw_metric_chart(df_scores, metric_label="Total Passes", avg_mode="Average"
     )
     return fig
 
-def _elegant_comparison_bar(title, val_first, val_last, suffix=""):
+ELEGANT_CHART_ACCENTS = ["#3b82f6", "#10b981", "#a78bfa", "#f59e0b", "#38bdf8", "#f97316", "#ec4899", "#14b8a6", "#eab308"]
+
+def _elegant_comparison_bar(title, val_first, val_last, suffix="", chart_index=0):
     """Refined, professional version of the comparison bar chart."""
     improved = val_last >= val_first
     accent = "#34d399" if improved else "#f87171"
+    border = ELEGANT_CHART_ACCENTS[chart_index % len(ELEGANT_CHART_ACCENTS)]
     base = max(abs(val_first), 1e-9)
     delta_pct = (val_last - val_first) / base * 100.0
     badge = f"▲ +{delta_pct:.0f}%" if improved else f"▼ {delta_pct:.0f}%"
-    y_top = max(val_first, val_last) * 1.30 if max(val_first, val_last) > 0 else 1.0
+    y_top = max(val_first, val_last) * 1.35 if max(val_first, val_last) > 0 else 1.0
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=["First 10", "Last 10"],
         y=[val_first, val_last],
         marker=dict(
-            color=[f"rgba(148,163,184,0.55)", accent],
-            line=dict(color=["rgba(148,163,184,0.9)", accent], width=1.5),
+            color=[f"rgba(148,163,184,0.50)", accent],
+            line=dict(color=[border, accent], width=[1.2, 2.0]),
         ),
         text=[f"{val_first:.2f}{suffix}", f"{val_last:.2f}{suffix}"],
-        textposition='outside',
-        textfont=dict(size=14, color="#ffffff", family="Arial Black"),
-        width=[0.45, 0.45],
+        textposition="outside",
+        textfont=dict(size=13, color="#ffffff"),
+        width=[0.26, 0.26],
         hovertemplate="%{x}<br>" + title + ": %{y:.2f}" + suffix + "<extra></extra>",
         cliponaxis=False,
     ))
     fig.add_annotation(
-        x=0.5, xref="paper", y=1.0, yref="paper", yanchor="bottom",
+        x=0.5, xref="paper", y=1.02, yref="paper", yanchor="bottom",
         text=f"<span style='color:{accent};font-weight:700'>{badge}</span>",
-        showarrow=False, font=dict(size=13), align="center"
+        showarrow=False, font=dict(size=12), align="center",
     )
     fig.update_layout(
-        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        height=260, margin=dict(l=12, r=12, t=54, b=24),
-        yaxis=dict(range=[0, y_top], showgrid=False, zeroline=False,
-                   showticklabels=False, visible=False),
-        xaxis=dict(showgrid=False, zeroline=False,
-                   tickfont=dict(size=12, color="#c7cdda")),
-        title=dict(text=title, x=0.5, xanchor="center",
-                   font=dict(size=15, color="#eef1f7")),
-        showlegend=False, bargap=0.35,
+        template="plotly_dark",
+        paper_bgcolor="#1a1a2e",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=270,
+        margin=dict(l=14, r=14, t=58, b=28),
+        yaxis=dict(range=[0, y_top], showgrid=True, gridcolor="rgba(255,255,255,0.04)",
+                   gridwidth=1, zeroline=False, showticklabels=False, visible=False),
+        xaxis=dict(showgrid=False, zeroline=False, tickfont=dict(size=11, color="#c7cdda")),
+        title=dict(text=title, x=0.5, xanchor="center", font=dict(size=14, color="#eef1f7")),
+        showlegend=False,
+        bargap=0.58,
+        shapes=[
+            dict(type="rect", xref="paper", yref="paper", x0=0, y0=0, x1=1, y1=1,
+                 line=dict(color=border, width=1.5), fillcolor="rgba(26,26,46,0.45)"),
+            dict(type="line", xref="paper", yref="paper", x0=0.04, y0=0.14, x1=0.96, y1=0.14,
+                 line=dict(color="rgba(255,255,255,0.08)", width=1)),
+        ],
     )
     return fig
 
 
-def draw_comparison_bar(title, val_first, val_last, suffix="", elegant=None):
+def draw_comparison_bar(title, val_first, val_last, suffix="", elegant=None, chart_index=None):
     if elegant is None:
         elegant = ELEGANT_CHARTS
+    if chart_index is None:
+        chart_index = abs(hash(title)) % len(ELEGANT_CHART_ACCENTS)
     if elegant:
-        return _elegant_comparison_bar(title, val_first, val_last, suffix)
+        return _elegant_comparison_bar(title, val_first, val_last, suffix, chart_index)
     color_last = "#10b981" if val_last >= val_first else "#E07070"
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -2257,3 +2315,4 @@ with tab_evo:
                 st.plotly_chart(fig_shots_evo, use_container_width=True)
         else:
             st.warning("Not enough data to generate offensive evolution charts.")
+
