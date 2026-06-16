@@ -70,6 +70,14 @@ PENALTY_AREA_X = 18.0
 FUNNEL_X_EXTEND = 33.0
 PENALTY_AREA_Y_MIN = 18.0
 PENALTY_AREA_Y_MAX = 62.0
+GOAL_WIDTH = 7.32
+GOAL_HEIGHT = 2.44
+SHOT_HALF_X = HALF_LINE_X
+EVO_CATEGORY_COLORS = {
+    "passes": PASS_TONES[1],
+    "defensive": DEF_TONES[1],
+    "offensive": OFF_TONES[1],
+}
 
 def _hex_to_rgba(hex_color, alpha=1.0):
     if hex_color.startswith('#'):
@@ -294,30 +302,48 @@ def _gen_match_touches(rng):
     return rows
 
 
+def _off_target_goal_coords(rng):
+    """Goal-mouth coordinates always outside the frame (7.32 m × 2.44 m)."""
+    side = rng.choice(["left", "right", "high", "low"])
+    if side == "left":
+        return rng.uniform(-1.8, -0.15), rng.uniform(-0.2, GOAL_HEIGHT + 0.2)
+    if side == "right":
+        return rng.uniform(GOAL_WIDTH + 0.15, GOAL_WIDTH + 1.8), rng.uniform(-0.2, GOAL_HEIGHT + 0.2)
+    if side == "high":
+        return rng.uniform(-0.3, GOAL_WIDTH + 0.3), rng.uniform(GOAL_HEIGHT + 0.15, GOAL_HEIGHT + 1.2)
+    return rng.uniform(0.0, GOAL_WIDTH), rng.uniform(-1.2, -0.15)
+
+
 def _gen_match_shots(rng):
-    # shots: few per match (some matches with none), around the penalty area.
-    # Each shot also gets a goal-mouth coordinate (gx in [0, 7.32], gy in [0, 2.44]):
-    # goals / on-target land inside the frame, off-target may be wide or over.
-    n = rng.randint(0, 5)
+    # shots: few per match, around the penalty area.
+    # gx/gy in goal-mouth coords; blocked shots have no goal-mouth point.
+    n = rng.randint(0, 6)
     rows = []
     for _ in range(n):
         x = _gen_clampx(rng.gauss(104, 7))
         y = _gen_clampy(rng.gauss(40, 9))
         roll = rng.random()
-        if roll < 0.13:
+        if roll < 0.10:
             outcome = "GOAL"
-        elif roll < 0.50:
+        elif roll < 0.38:
             outcome = "ON_TARGET"
+        elif roll < 0.52:
+            outcome = "BLOCKED"
         else:
             outcome = "OFF_TARGET"
         if outcome in ("GOAL", "ON_TARGET"):
             gx = rng.uniform(0.4, 6.92)
             gy = rng.uniform(0.2, 2.25)
+        elif outcome == "BLOCKED":
+            gx, gy = None, None
         else:
-            gx = rng.uniform(-0.6, 7.9)
-            gy = rng.uniform(0.2, 2.9)
-        rows.append((outcome, _gen_r2(x), _gen_r2(y), _gen_r2(gx), _gen_r2(gy)))
-    order = {"GOAL": 0, "ON_TARGET": 1, "OFF_TARGET": 2}
+            gx, gy = _off_target_goal_coords(rng)
+        rows.append((
+            outcome, _gen_r2(x), _gen_r2(y),
+            _gen_r2(gx) if gx is not None else None,
+            _gen_r2(gy) if gy is not None else None,
+        ))
+    order = {"GOAL": 0, "ON_TARGET": 1, "BLOCKED": 2, "OFF_TARGET": 3}
     rows.sort(key=lambda r: order[r[0]])
     return rows
 
@@ -480,6 +506,9 @@ for match_name, events in SHOTS_DATA.items():
     df_sh["match"] = match_name
     df_sh["is_goal"] = df_sh["type"] == "GOAL"
     df_sh["is_on_target"] = df_sh["type"].isin(["GOAL", "ON_TARGET"])
+    df_sh["is_blocked"] = df_sh["type"] == "BLOCKED"
+    df_sh["is_off_target"] = df_sh["type"] == "OFF_TARGET"
+    df_sh["has_goal_mouth"] = df_sh["gx"].notna() & df_sh["gy"].notna()
     shots_dfs_by_match[match_name] = df_sh
 
 # STATS & SCORES
@@ -1323,6 +1352,7 @@ COLOR_OFF_DUEL_LOST = "#E07070"
 COLOR_GOAL = "#ffd700"
 COLOR_SHOT_ON = "#10b981"
 COLOR_SHOT_OFF = "#E07070"
+COLOR_SHOT_BLOCKED = "#a78bfa"
 
 def draw_offensive_duels_map(df):
     fig, ax, pitch = _base_pitch()
@@ -1354,7 +1384,7 @@ def draw_touches_heatmap(df):
         cmap_touch = LinearSegmentedColormap.from_list(
             "touch", ["#252845", "#2e3560", "#3b82f6", "#22d3ee", "#fde047"]
         )
-        bin_stat = pitch.bin_statistic(df["x"].values, df["y"].values, statistic="count", bins=(12, 8))
+        bin_stat = pitch.bin_statistic(df["x"].values, df["y"].values, statistic="count", bins=(24, 16))
         mesh = pitch.heatmap(
             bin_stat, ax=ax, cmap=cmap_touch,
             edgecolors="#2a3050", linewidth=0.35,
@@ -1369,28 +1399,6 @@ def draw_touches_heatmap(df):
 
 GOAL_WIDTH = 7.32
 GOAL_HEIGHT = 2.44
-
-def _goal_mouth_hover_diagram(gx, gy, color):
-    """Mini goleira proporcional (traves + travessão) para o hover."""
-    cols, rows = 11, 4
-    gx_cl = float(np.clip(gx, 0, GOAL_WIDTH))
-    gy_cl = float(np.clip(gy, 0, GOAL_HEIGHT))
-    sc = int(np.clip(gx_cl / GOAL_WIDTH * (cols - 1), 0, cols - 1))
-    sr = int(np.clip(gy_cl / GOAL_HEIGHT * (rows - 1), 0, rows - 1))
-    sr_top = rows - 1 - sr
-    top = "╔" + "═" * cols + "╗"
-    bot = "╚" + "═" * cols + "╝"
-    body = []
-    for r in range(rows):
-        chars = []
-        for c in range(cols):
-            if r == sr_top and c == sc:
-                chars.append(f"<span style='color:{color};font-size:14px'>●</span>")
-            else:
-                chars.append("·")
-        body.append("║" + " ".join(chars) + "║")
-    return "<br>".join([top] + body + [bot])
-
 
 def _goal_frame_plotly_shapes():
     """Traves, travessão e rede no painel Goal Mouth (eixo x2/y2)."""
@@ -1412,56 +1420,72 @@ def _goal_frame_plotly_shapes():
     return shapes
 
 
-def _plotly_pitch_layout(fig, extra_shapes=None):
-    """Apply a simple full-pitch background (StatsBomb coords) on a dark figure."""
+def _plotly_half_pitch_layout(fig, extra_shapes=None, selected_label=None):
+    """Attacking half-pitch background (StatsBomb coords, x >= 60)."""
     line = "rgba(255,255,255,0.45)"
-    dim = "rgba(255,255,255,0.25)"
     post = dict(color="rgba(255,255,255,0.95)", width=3)
+    cx = FIELD_X - 9.15
     shapes = [
-        dict(type="rect", x0=0, y0=0, x1=FIELD_X, y1=FIELD_Y, line=dict(color=line, width=1.2)),
-        dict(type="line", x0=HALF_LINE_X, y0=0, x1=HALF_LINE_X, y1=FIELD_Y, line=dict(color=line, width=1)),
-        dict(type="circle", x0=HALF_LINE_X - 9.15, y0=FIELD_Y / 2 - 9.15,
-             x1=HALF_LINE_X + 9.15, y1=FIELD_Y / 2 + 9.15, line=dict(color=line, width=1)),
+        dict(type="rect", x0=SHOT_HALF_X, y0=0, x1=FIELD_X, y1=FIELD_Y, line=dict(color=line, width=1.2)),
+        dict(type="line", x0=SHOT_HALF_X, y0=0, x1=SHOT_HALF_X, y1=FIELD_Y, line=dict(color=line, width=1.5)),
+        dict(type="circle", x0=cx - 9.15, y0=FIELD_Y / 2 - 9.15,
+             x1=cx + 9.15, y1=FIELD_Y / 2 + 9.15, line=dict(color=line, width=1)),
         dict(type="rect", x0=102, y0=18, x1=120, y1=62, line=dict(color=line, width=1)),
         dict(type="rect", x0=114, y0=30, x1=120, y1=50, line=dict(color=line, width=1)),
         dict(type="line", x0=120, y0=36, x1=120, y1=44, line=post),
         dict(type="line", x0=120, y0=36, x1=122, y1=36, line=post),
         dict(type="line", x0=120, y0=44, x1=122, y1=44, line=post),
-        dict(type="rect", x0=0, y0=18, x1=18, y1=62, line=dict(color=line, width=1)),
-        dict(type="rect", x0=0, y0=30, x1=6, y1=50, line=dict(color=line, width=1)),
-        dict(type="line", x0=FINAL_THIRD_LINE_X, y0=0, x1=FINAL_THIRD_LINE_X, y1=FIELD_Y,
-             line=dict(color=dim, width=1, dash="dash")),
     ]
     if extra_shapes:
         shapes.extend(extra_shapes)
+    annotations = [
+        dict(text="Goal Mouth <span style='font-size:10px;color:#888'>(click a shot)</span>",
+             x=0.86, xref="paper", y=1.06, yref="paper",
+             showarrow=False, font=dict(size=11, color="#a0a0b5")),
+    ]
+    if selected_label:
+        annotations.append(
+            dict(text=selected_label, x=0.33, xref="paper", y=1.06, yref="paper",
+                 showarrow=False, font=dict(size=11, color="#fde047"))
+        )
     fig.update_layout(
         shapes=shapes,
         paper_bgcolor="#1a1a2e", plot_bgcolor="#1a1a2e",
-        height=320, margin=dict(l=8, r=8, t=36, b=10),
-        xaxis=dict(visible=False, range=[-4, 124], constrain="domain", domain=[0, 0.66]),
+        height=340, margin=dict(l=8, r=8, t=44, b=10),
+        xaxis=dict(visible=False, range=[SHOT_HALF_X - 4, FIELD_X + 4], constrain="domain", domain=[0, 0.66]),
         yaxis=dict(visible=False, range=[-4, 84], scaleanchor="x", scaleratio=1),
-        xaxis2=dict(visible=False, range=[-0.4, GOAL_WIDTH + 0.4], domain=[0.72, 1.0]),
-        yaxis2=dict(visible=False, range=[-0.2, GOAL_HEIGHT + 0.35], scaleanchor="x2", scaleratio=1),
+        xaxis2=dict(visible=False, range=[-1.2, GOAL_WIDTH + 1.2], domain=[0.72, 1.0]),
+        yaxis2=dict(visible=False, range=[-1.0, GOAL_HEIGHT + 0.8], scaleanchor="x2", scaleratio=1),
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=0.0, xanchor="left", x=0.0,
                     bgcolor="rgba(26,26,46,0.6)", font=dict(size=9, color="#ffffff")),
         hoverlabel=dict(bgcolor="#11162a", bordercolor="#444466",
                         font=dict(family="monospace", size=12, color="#ffffff"), align="left"),
-        annotations=[
-            dict(text="Goal Mouth", x=0.86, xref="paper", y=1.06, yref="paper",
-                 showarrow=False, font=dict(size=11, color="#a0a0b5")),
-        ],
+        annotations=annotations,
+        clickmode="event+select",
     )
 
 
-def draw_shots_map(df):
-    """Interactive shots map with a real goal-mouth panel (posts, crossbar, net)."""
+def draw_shots_map(df, selected_shot_id=None):
+    """Half-pitch shot map + goal mouth. Click a shot to highlight it in the goal panel."""
+    df = df.reset_index(drop=True).copy()
+    df["shot_id"] = df.index
     fig = go.Figure()
+    lookup = {}
+    curve_num = 0
+
     groups = [
         ("Goal", df[df["is_goal"]], COLOR_GOAL, "star", 16),
         ("On Target", df[(~df["is_goal"]) & (df["is_on_target"])], COLOR_SHOT_ON, "circle", 12),
-        ("Off Target", df[~df["is_on_target"]], COLOR_SHOT_OFF, "x", 12),
+        ("Blocked", df[df["is_blocked"]], COLOR_SHOT_BLOCKED, "diamond", 13),
+        ("Off Target", df[df["is_off_target"]], COLOR_SHOT_OFF, "x", 12),
     ]
+
+    selected_label = None
+    if selected_shot_id is not None and selected_shot_id in df["shot_id"].values:
+        sel = df.loc[df["shot_id"] == selected_shot_id].iloc[0]
+        selected_label = f"Selected: {sel['type']} ({sel['x']:.0f}, {sel['y']:.0f})"
+
     for name, gdf, color, symbol, size in groups:
         if gdf.empty:
             fig.add_trace(go.Scatter(
@@ -1470,26 +1494,54 @@ def draw_shots_map(df):
                 name=name, showlegend=True, hoverinfo="skip",
             ))
             continue
-        custom = []
+
+        sizes, opacities, line_widths = [], [], []
         for _, r in gdf.iterrows():
-            grid = _goal_mouth_hover_diagram(float(r["gx"]), float(r["gy"]), color)
-            header = f"<b style='color:{color}'>{name}</b> ({float(r['gx']):.1f}m × {float(r['gy']):.1f}m)"
-            custom.append([header, grid])
+            sid = int(r["shot_id"])
+            is_sel = sid == selected_shot_id
+            sizes.append(size * 1.45 if is_sel else size)
+            opacities.append(1.0 if is_sel else 0.82)
+            line_widths.append(3.0 if is_sel else 1.1)
+
+        for local_i, (_, r) in enumerate(gdf.iterrows()):
+            lookup[(curve_num, local_i)] = int(r["shot_id"])
+
         fig.add_trace(go.Scatter(
             x=gdf["x"], y=gdf["y"], mode="markers",
-            marker=dict(size=size, color=color, symbol=symbol, line=dict(color="white", width=1.1)),
-            name=name, customdata=custom,
-            hovertemplate="%{customdata[0]}<br>— goal placement —<br>%{customdata[1]}<extra></extra>",
+            marker=dict(
+                size=sizes, color=color, symbol=symbol, opacity=opacities,
+                line=dict(color="#ffffff", width=line_widths),
+            ),
+            name=name,
+            customdata=gdf["shot_id"].tolist(),
+            hovertemplate=f"<b>{name}</b><br>Click to highlight in goal<extra></extra>",
         ))
+        curve_num += 1
+
+        gdf_goal = gdf[gdf["has_goal_mouth"]].copy()
+        if gdf_goal.empty:
+            continue
+
+        gm_sizes, gm_opacities, gm_line_widths = [], [], []
+        for _, r in gdf_goal.iterrows():
+            sid = int(r["shot_id"])
+            is_sel = sid == selected_shot_id
+            gm_sizes.append(max(14, size + 4) if is_sel else max(7, size - 4))
+            gm_opacities.append(1.0 if is_sel else 0.22)
+            gm_line_widths.append(3.0 if is_sel else 0.8)
+
         fig.add_trace(go.Scatter(
-            x=gdf["gx"], y=gdf["gy"], mode="markers",
+            x=gdf_goal["gx"], y=gdf_goal["gy"], mode="markers",
             xaxis="x2", yaxis="y2",
-            marker=dict(size=max(8, size - 2), color=color, symbol=symbol,
-                        line=dict(color="white", width=1), opacity=0.9),
+            marker=dict(
+                size=gm_sizes, color=color, symbol=symbol, opacity=gm_opacities,
+                line=dict(color="#ffffff", width=gm_line_widths),
+            ),
             name=name, showlegend=False, hoverinfo="skip",
         ))
-    _plotly_pitch_layout(fig, extra_shapes=_goal_frame_plotly_shapes())
-    return fig
+
+    _plotly_half_pitch_layout(fig, extra_shapes=_goal_frame_plotly_shapes(), selected_label=selected_label)
+    return fig, lookup
 
 # PLOTLY CHARTS
 def _avg_reference_traces(fig, x_labels, series, avg_mode, value_fmt):
@@ -1590,27 +1642,40 @@ def draw_metric_chart(df_scores, metric_label="Total Passes", avg_mode="Average"
 
 ELEGANT_CHART_ACCENTS = ["#3b82f6", "#10b981", "#a78bfa", "#f59e0b", "#38bdf8", "#f97316", "#ec4899", "#14b8a6", "#eab308"]
 
-def _elegant_comparison_bar(title, val_first, val_last, suffix="", chart_index=0):
-    """Refined, professional version of the comparison bar chart."""
+def _evo_split(df, n):
+    """Split a match-ordered dataframe into first-N and last-N periods."""
+    total = len(df)
+    if total == 0:
+        return df, df, 0
+    n = max(1, min(int(n), total // 2 if total >= 2 else 1))
+    if total < 2 * n:
+        n = max(1, total // 2)
+    return df.head(n), df.tail(n), n
+
+
+def _elegant_comparison_bar(title, val_first, val_last, suffix="", category="passes", n_first=10, n_last=10):
+    """Refined comparison bar: category-colored box, per-bar green/red borders."""
     improved = val_last >= val_first
     accent = "#34d399" if improved else "#f87171"
-    border = ELEGANT_CHART_ACCENTS[chart_index % len(ELEGANT_CHART_ACCENTS)]
+    box_border = EVO_CATEGORY_COLORS.get(category, PASS_TONES[1])
+    bar0_border = "#34d399" if val_first >= val_last else "#f87171"
+    bar1_border = "#34d399" if val_last >= val_first else "#f87171"
     base = max(abs(val_first), 1e-9)
     delta_pct = (val_last - val_first) / base * 100.0
     badge = f"▲ +{delta_pct:.0f}%" if improved else f"▼ {delta_pct:.0f}%"
     y_top = max(val_first, val_last) * 1.35 if max(val_first, val_last) > 0 else 1.0
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=["First 10", "Last 10"],
+        x=[f"First {n_first}", f"Last {n_last}"],
         y=[val_first, val_last],
         marker=dict(
-            color=[f"rgba(148,163,184,0.50)", accent],
-            line=dict(color=[border, accent], width=[1.2, 2.0]),
+            color=[f"rgba(148,163,184,0.50)", f"rgba(148,163,184,0.50)"],
+            line=dict(color=[bar0_border, bar1_border], width=[2.5, 2.5]),
         ),
         text=[f"{val_first:.2f}{suffix}", f"{val_last:.2f}{suffix}"],
         textposition="outside",
         textfont=dict(size=13, color="#ffffff"),
-        width=[0.26, 0.26],
+        width=[0.38, 0.38],
         hovertemplate="%{x}<br>" + title + ": %{y:.2f}" + suffix + "<extra></extra>",
         cliponaxis=False,
     ))
@@ -1630,10 +1695,10 @@ def _elegant_comparison_bar(title, val_first, val_last, suffix="", chart_index=0
         xaxis=dict(showgrid=False, zeroline=False, tickfont=dict(size=11, color="#c7cdda")),
         title=dict(text=title, x=0.5, xanchor="center", font=dict(size=14, color="#eef1f7")),
         showlegend=False,
-        bargap=0.58,
+        bargap=0.18,
         shapes=[
             dict(type="rect", xref="paper", yref="paper", x0=0, y0=0, x1=1, y1=1,
-                 line=dict(color=border, width=1.5), fillcolor="rgba(26,26,46,0.45)"),
+                 line=dict(color=box_border, width=1.5), fillcolor="rgba(26,26,46,0.45)"),
             dict(type="line", xref="paper", yref="paper", x0=0.04, y0=0.14, x1=0.96, y1=0.14,
                  line=dict(color="rgba(255,255,255,0.08)", width=1)),
         ],
@@ -1641,23 +1706,26 @@ def _elegant_comparison_bar(title, val_first, val_last, suffix="", chart_index=0
     return fig
 
 
-def draw_comparison_bar(title, val_first, val_last, suffix="", elegant=None, chart_index=None):
+def draw_comparison_bar(title, val_first, val_last, suffix="", elegant=None, category="passes",
+                        n_first=10, n_last=10):
     if elegant is None:
         elegant = ELEGANT_CHARTS
-    if chart_index is None:
-        chart_index = abs(hash(title)) % len(ELEGANT_CHART_ACCENTS)
     if elegant:
-        return _elegant_comparison_bar(title, val_first, val_last, suffix, chart_index)
-    color_last = "#10b981" if val_last >= val_first else "#E07070"
+        return _elegant_comparison_bar(title, val_first, val_last, suffix, category, n_first, n_last)
+    color_first = "#34d399" if val_first >= val_last else "#f87171"
+    color_last = "#34d399" if val_last >= val_first else "#f87171"
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=["First 10 Matches", "Last 10 Matches"],
+        x=[f"First {n_first} Matches", f"Last {n_last} Matches"],
         y=[val_first, val_last],
-        marker_color=["#444466", color_last],
+        marker=dict(
+            color=["#444466", "#444466"],
+            line=dict(color=[color_first, color_last], width=[2.0, 2.0]),
+        ),
         text=[f"{val_first:.2f}{suffix}", f"{val_last:.2f}{suffix}"],
         textposition='auto',
-        width=[0.35, 0.35],
-        hovertemplate="%{x}<br>" + title + ": %{y:.2f}" + suffix
+        width=[0.38, 0.38],
+        hovertemplate="%{x}<br>" + title + ": %{y:.2f}" + suffix + "<extra></extra>",
     ))
     fig.update_layout(
         template="plotly_dark", paper_bgcolor="#1a1a2e", plot_bgcolor="#1a1a2e",
@@ -1666,7 +1734,7 @@ def draw_comparison_bar(title, val_first, val_last, suffix="", elegant=None, cha
                    showgrid=True, gridcolor="rgba(255,255,255,0.05)", zeroline=False),
         xaxis=dict(showgrid=False, zeroline=False),
         title=dict(text=title, font=dict(size=14, color="#a0a0b5")),
-        showlegend=False, bargap=0.2
+        showlegend=False, bargap=0.18,
     )
     return fig
 
@@ -2099,6 +2167,8 @@ with tab_dash:
 
     with sub_tab_off:
         st.markdown("### Match Filter")
+        if "selected_shot_id" not in st.session_state:
+            st.session_state.selected_shot_id = None
         col_of1, col_of2 = st.columns(2)
         with col_of1:
             off_match_options = ["All Matches"] + list(touches_dfs_by_match.keys())
@@ -2134,7 +2204,9 @@ with tab_dash:
         st.markdown("---")
         img_th_game, fig_th_game = draw_touches_heatmap(touches_game); plt.close(fig_th_game)
         img_od_game, fig_od_game = draw_offensive_duels_map(duels_game); plt.close(fig_od_game)
-        fig_sh_game = draw_shots_map(shots_game)
+        fig_sh_game, shot_lookup = draw_shots_map(
+            shots_game, selected_shot_id=st.session_state.get("selected_shot_id")
+        )
 
         col_om1, col_om2, col_om3 = st.columns(3)
         with col_om1:
@@ -2144,8 +2216,18 @@ with tab_dash:
             st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Offensive Duels Map</div>', unsafe_allow_html=True)
             st.image(img_od_game, use_container_width=True)
         with col_om3:
-            st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Shots Map <span style="font-size:11px;color:#888">(hover a shot for the goal placement)</span></div>', unsafe_allow_html=True)
-            st.plotly_chart(fig_sh_game, use_container_width=True)
+            st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Shots Map <span style="font-size:11px;color:#888">(click a shot to highlight in goal)</span></div>', unsafe_allow_html=True)
+            shot_event = st.plotly_chart(
+                fig_sh_game, use_container_width=True,
+                on_select="rerun", selection_mode="points", key="shots_map_select",
+            )
+            if shot_event and getattr(shot_event, "selection", None) and shot_event.selection.points:
+                pt = shot_event.selection.points[0]
+                key = (pt.get("curve_number"), pt.get("point_index"))
+                if key in shot_lookup:
+                    st.session_state.selected_shot_id = shot_lookup[key]
+            if st.button("Clear shot selection", key="clear_shot_sel"):
+                st.session_state.selected_shot_id = None
 
         st.markdown("", unsafe_allow_html=True)
         col_os1, col_os2, col_os3 = st.columns(3)
@@ -2196,123 +2278,110 @@ with tab_dash:
 
 with tab_evo:
     ELEGANT_CHARTS = st.toggle("Gráficos elegantes", value=False, key="elegant_charts")
+    max_compare = max(1, num_matches // 2)
+    default_n = min(10, max_compare)
+    n_compare = st.slider(
+        "Matches per comparison period",
+        min_value=1, max_value=max_compare, value=default_n,
+        help="Compare the average of the first N matches vs the last N matches.",
+        key="evo_n_compare",
+    )
+    st.caption(f"Comparing **first {n_compare}** vs **last {n_compare}** matches (of {num_matches} total).")
+
     sub_tab_evo_passes, sub_tab_evo_def, sub_tab_evo_off = st.tabs(["Passes", "Defensive Actions", "Offensive Actions"])
 
     with sub_tab_evo_passes:
-        st.markdown("### First 10 vs Last 10 Matches")
-        st.markdown("Comparing the average passing performance between the first 10 and the last 10 matches to analyze player evolution.")
+        st.markdown(f"### First {n_compare} vs Last {n_compare} Matches")
+        st.markdown("Compare average passing performance between the early and recent periods.")
         df_scores = compute_match_scores(dfs_by_match, defensive_dfs_by_match, OFF_DICTS)
         if len(df_scores) > 0:
-            if len(df_scores) < 20:
-                st.info(f"Note: Only {len(df_scores)} matches available. The comparison will overlap or use available data.")
-            first_10 = df_scores.head(10)
-            last_10 = df_scores.tail(10)
+            if len(df_scores) < 2 * n_compare:
+                st.info(f"Note: Only {len(df_scores)} matches available — periods may overlap.")
+            first_p, last_p, n_eff = _evo_split(df_scores, n_compare)
 
             r1c1, r1c2, r1c3 = st.columns(3)
             with r1c1:
-                fig_grade = draw_comparison_bar("Pass Grade", first_10["Grade"].mean(), last_10["Grade"].mean())
-                st.plotly_chart(fig_grade, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Pass Grade", first_p["pass_grade"].mean(), last_p["pass_grade"].mean(), category="passes", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with r1c2:
-                fig_xt_evo = draw_comparison_bar("Σ Pass Impact", first_10["xt_p90"].mean(), last_10["xt_p90"].mean())
-                st.plotly_chart(fig_xt_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Σ Pass Impact", first_p["xt_p90"].mean(), last_p["xt_p90"].mean(), category="passes", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with r1c3:
-                fig_high_xt_evo = draw_comparison_bar("High Impact Passes", first_10["high_xt_p90"].mean(), last_10["high_xt_p90"].mean())
-                st.plotly_chart(fig_high_xt_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("High Impact Passes", first_p["high_xt_p90"].mean(), last_p["high_xt_p90"].mean(), category="passes", n_first=n_eff, n_last=n_eff), use_container_width=True)
 
             r2c1, r2c2, r2c3 = st.columns(3)
             with r2c1:
-                fig_prog_evo = draw_comparison_bar("Progressive Passes", first_10["prog_p90"].mean(), last_10["prog_p90"].mean())
-                st.plotly_chart(fig_prog_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Progressive Passes", first_p["prog_p90"].mean(), last_p["prog_p90"].mean(), category="passes", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with r2c2:
-                fig_f3_evo = draw_comparison_bar("Final Third Passes", first_10["f3_p90"].mean(), last_10["f3_p90"].mean())
-                st.plotly_chart(fig_f3_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Final Third Passes", first_p["f3_p90"].mean(), last_p["f3_p90"].mean(), category="passes", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with r2c3:
-                fig_dz_evo = draw_comparison_bar("Dangerous Zone Passes", first_10["dz_p90"].mean(), last_10["dz_p90"].mean())
-                st.plotly_chart(fig_dz_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Dangerous Zone Passes", first_p["dz_p90"].mean(), last_p["dz_p90"].mean(), category="passes", n_first=n_eff, n_last=n_eff), use_container_width=True)
 
             r3c1, r3c2, r3c3 = st.columns(3)
             with r3c1:
-                fig_acc_evo = draw_comparison_bar("Successful Passes %", first_10["accuracy_pct"].mean(), last_10["accuracy_pct"].mean(), suffix="%")
-                st.plotly_chart(fig_acc_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Successful Passes %", first_p["accuracy_pct"].mean(), last_p["accuracy_pct"].mean(), suffix="%", category="passes", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with r3c2:
-                fig_long_evo = draw_comparison_bar("Long Pass Accuracy %", first_10["long_acc_pct"].mean(), last_10["long_acc_pct"].mean(), suffix="%")
-                st.plotly_chart(fig_long_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Long Pass Accuracy %", first_p["long_acc_pct"].mean(), last_p["long_acc_pct"].mean(), suffix="%", category="passes", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with r3c3:
-                fig_prog_acc_evo = draw_comparison_bar("Progressive Accuracy %", first_10["prog_acc_pct"].mean(), last_10["prog_acc_pct"].mean(), suffix="%")
-                st.plotly_chart(fig_prog_acc_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Progressive Accuracy %", first_p["prog_acc_pct"].mean(), last_p["prog_acc_pct"].mean(), suffix="%", category="passes", n_first=n_eff, n_last=n_eff), use_container_width=True)
         else:
             st.warning("Not enough data to generate evolution charts.")
 
     with sub_tab_evo_def:
-        st.markdown("### First 10 vs Last 10 Matches")
-        st.markdown("Comparing the average defensive performance between the first 10 and the last 10 matches.")
+        st.markdown(f"### First {n_compare} vs Last {n_compare} Matches")
+        st.markdown("Compare average defensive performance between the early and recent periods.")
         df_scores = compute_match_scores(dfs_by_match, defensive_dfs_by_match, OFF_DICTS)
         df_def_evo = compute_defensive_evolution_df(defensive_dfs_by_match, df_scores)
         if len(df_def_evo) > 0:
-            if len(df_def_evo) < 20:
-                st.info(f"Note: Only {len(df_def_evo)} matches available. The comparison will overlap or use available data.")
-            first_10_def = df_def_evo.head(10)
-            last_10_def = df_def_evo.tail(10)
+            if len(df_def_evo) < 2 * n_compare:
+                st.info(f"Note: Only {len(df_def_evo)} matches available — periods may overlap.")
+            first_d, last_d, n_eff = _evo_split(df_def_evo, n_compare)
 
             rd1c1, rd1c2, rd1c3 = st.columns(3)
             with rd1c1:
-                g1 = first_10_def["grade"].dropna()
-                g2 = last_10_def["grade"].dropna()
+                g1 = first_d["grade"].dropna()
+                g2 = last_d["grade"].dropna()
                 v1 = g1.mean() if len(g1) > 0 else 0
                 v2 = g2.mean() if len(g2) > 0 else 0
-                fig_grade_def = draw_comparison_bar("Defensive Actions Grade", v1, v2)
-                st.plotly_chart(fig_grade_def, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Defensive Actions Grade", v1, v2, category="defensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with rd1c2:
-                fig_duels_won = draw_comparison_bar("Duels Won p90", first_10_def["duels_won_p90"].mean(), last_10_def["duels_won_p90"].mean())
-                st.plotly_chart(fig_duels_won, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Duels Won p90", first_d["duels_won_p90"].mean(), last_d["duels_won_p90"].mean(), category="defensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with rd1c3:
-                fig_duels_pct = draw_comparison_bar("% Duels Won", first_10_def["duels_won_pct"].mean(), last_10_def["duels_won_pct"].mean(), suffix="%")
-                st.plotly_chart(fig_duels_pct, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("% Duels Won", first_d["duels_won_pct"].mean(), last_d["duels_won_pct"].mean(), suffix="%", category="defensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
 
             rd2c1, rd2c2, rd2c3 = st.columns(3)
             with rd2c1:
-                fig_def_act = draw_comparison_bar("Defensive Actions p90", first_10_def["def_actions_p90"].mean(), last_10_def["def_actions_p90"].mean())
-                st.plotly_chart(fig_def_act, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Defensive Actions p90", first_d["def_actions_p90"].mean(), last_d["def_actions_p90"].mean(), category="defensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with rd2c2:
-                fig_int_evo = draw_comparison_bar("Interceptions p90", first_10_def["interceptions_p90"].mean(), last_10_def["interceptions_p90"].mean())
-                st.plotly_chart(fig_int_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Interceptions p90", first_d["interceptions_p90"].mean(), last_d["interceptions_p90"].mean(), category="defensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with rd2c3:
-                fig_funnel_evo = draw_comparison_bar("Funnel Actions p90", first_10_def["funnel_actions_p90"].mean(), last_10_def["funnel_actions_p90"].mean())
-                st.plotly_chart(fig_funnel_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Funnel Actions p90", first_d["funnel_actions_p90"].mean(), last_d["funnel_actions_p90"].mean(), category="defensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
         else:
             st.warning("Not enough data to generate defensive evolution charts.")
 
     with sub_tab_evo_off:
-        st.markdown("### First 10 vs Last 10 Matches")
-        st.markdown("Comparing the average offensive performance between the first 10 and the last 10 matches.")
+        st.markdown(f"### First {n_compare} vs Last {n_compare} Matches")
+        st.markdown("Compare average offensive performance between the early and recent periods.")
         df_scores = compute_match_scores(dfs_by_match, defensive_dfs_by_match, OFF_DICTS)
         if len(df_scores) > 0:
-            if len(df_scores) < 20:
-                st.info(f"Note: Only {len(df_scores)} matches available. The comparison will overlap or use available data.")
-            first_10_off = df_scores.head(10)
-            last_10_off = df_scores.tail(10)
+            if len(df_scores) < 2 * n_compare:
+                st.info(f"Note: Only {len(df_scores)} matches available — periods may overlap.")
+            first_o, last_o, n_eff = _evo_split(df_scores, n_compare)
 
             ro1c1, ro1c2, ro1c3 = st.columns(3)
             with ro1c1:
-                fig_off_grade = draw_comparison_bar("Offensive Grade", first_10_off["off_grade"].mean(), last_10_off["off_grade"].mean())
-                st.plotly_chart(fig_off_grade, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Offensive Grade", first_o["off_grade"].mean(), last_o["off_grade"].mean(), category="offensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with ro1c2:
-                fig_touches_evo = draw_comparison_bar("Touches p90", first_10_off["touches_p90"].mean(), last_10_off["touches_p90"].mean())
-                st.plotly_chart(fig_touches_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Touches p90", first_o["touches_p90"].mean(), last_o["touches_p90"].mean(), category="offensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with ro1c3:
-                fig_f3touch_evo = draw_comparison_bar("Final Third Touches p90", first_10_off["f3_touches_p90"].mean(), last_10_off["f3_touches_p90"].mean())
-                st.plotly_chart(fig_f3touch_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Final Third Touches p90", first_o["f3_touches_p90"].mean(), last_o["f3_touches_p90"].mean(), category="offensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
 
             ro2c1, ro2c2, ro2c3 = st.columns(3)
             with ro2c1:
-                fig_offduels_evo = draw_comparison_bar("Offensive Duels p90", first_10_off["off_duels_p90"].mean(), last_10_off["off_duels_p90"].mean())
-                st.plotly_chart(fig_offduels_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Offensive Duels p90", first_o["off_duels_p90"].mean(), last_o["off_duels_p90"].mean(), category="offensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with ro2c2:
-                fig_offduels_pct_evo = draw_comparison_bar("% Off. Duels Won", first_10_off["off_duels_won_pct"].mean(), last_10_off["off_duels_won_pct"].mean(), suffix="%")
-                st.plotly_chart(fig_offduels_pct_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("% Off. Duels Won", first_o["off_duels_won_pct"].mean(), last_o["off_duels_won_pct"].mean(), suffix="%", category="offensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
             with ro2c3:
-                fig_shots_evo = draw_comparison_bar("Shots p90", first_10_off["shots_p90"].mean(), last_10_off["shots_p90"].mean())
-                st.plotly_chart(fig_shots_evo, use_container_width=True)
+                st.plotly_chart(draw_comparison_bar("Shots p90", first_o["shots_p90"].mean(), last_o["shots_p90"].mean(), category="offensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
         else:
             st.warning("Not enough data to generate offensive evolution charts.")
+
 
