@@ -1399,10 +1399,52 @@ def draw_touches_heatmap(df):
 
 GOAL_WIDTH = 7.32
 GOAL_HEIGHT = 2.44
+SHOT_MAP_HEIGHT = int(FIG_H * 72)
 
 def _sb_to_vertical(x, y):
-    """StatsBomb horizontal -> vertical half-pitch (goal at top, py=0 is the goal line)."""
-    return float(y), float(FIELD_X - float(x))
+    """StatsBomb horizontal -> vertical half-pitch (goal at bottom, py=depth is the goal line)."""
+    return float(y), float(x) - SHOT_HALF_X
+
+
+def _estimate_goal_mouth(x, y, outcome):
+    """Estimate goal-mouth (gx, gy) from shot location when coordinates are missing."""
+    x, y = float(x), float(y)
+    lateral = (y - GOAL_Y) / (FIELD_Y / 2.0)
+    depth_factor = np.clip((x - SHOT_HALF_X) / max(GOAL_X - SHOT_HALF_X, 1e-6), 0.0, 1.0)
+    seed = abs(hash((round(x, 2), round(y, 2), str(outcome)))) % 1000 / 1000.0
+
+    if outcome in ("GOAL", "ON_TARGET", "BLOCKED"):
+        gx = float(np.clip(GOAL_WIDTH / 2 + lateral * 3.2, 0.25, GOAL_WIDTH - 0.25))
+        gy = float(np.clip(GOAL_HEIGHT * (0.22 + 0.58 * depth_factor + 0.08 * seed), 0.12, GOAL_HEIGHT - 0.12))
+        return round(gx, 2), round(gy, 2)
+
+    if abs(lateral) > 0.35:
+        gx = float(-0.6 - seed * 0.8 if lateral < 0 else GOAL_WIDTH + 0.6 + seed * 0.8)
+        gy = float(np.clip(GOAL_HEIGHT / 2 + lateral * 0.35, -0.2, GOAL_HEIGHT + 0.2))
+    elif seed > 0.55:
+        gx = float(np.clip(GOAL_WIDTH / 2 + lateral * 2.5, -0.3, GOAL_WIDTH + 0.3))
+        gy = float(GOAL_HEIGHT + 0.35 + seed * 0.5)
+    else:
+        gx = float(np.clip(GOAL_WIDTH / 2 + lateral * 2.5, -0.3, GOAL_WIDTH + 0.3))
+        gy = float(-0.35 - seed * 0.5)
+    return round(gx, 2), round(gy, 2)
+
+
+def _ensure_shot_goal_coords(df):
+    """Fill missing goal-mouth coordinates so every shot can be shown on the goal frame."""
+    df = df.copy()
+    estimated = []
+    for idx, row in df.iterrows():
+        if pd.notna(row["gx"]) and pd.notna(row["gy"]):
+            estimated.append(False)
+        else:
+            gx, gy = _estimate_goal_mouth(row["x"], row["y"], row["type"])
+            df.at[idx, "gx"] = gx
+            df.at[idx, "gy"] = gy
+            estimated.append(True)
+    df["goal_estimated"] = estimated
+    df["has_goal_mouth"] = True
+    return df
 
 
 def _goal_frame_plotly_shapes():
@@ -1426,108 +1468,102 @@ def _goal_frame_plotly_shapes():
 
 
 def _vertical_half_pitch_shapes():
-    """Attacking half-pitch drawn vertically (goal at top). px=0..80, py=0..60."""
+    """Attacking half-pitch drawn vertically (goal at bottom). px=0..80, py=0..60."""
     line = "rgba(255,255,255,0.45)"
     post = dict(color="rgba(255,255,255,0.95)", width=3)
     depth = FIELD_X - SHOT_HALF_X
     return [
         dict(type="rect", x0=0, y0=0, x1=FIELD_Y, y1=depth, line=dict(color=line, width=1.2)),
-        dict(type="line", x0=0, y0=depth, x1=FIELD_Y, y1=depth, line=dict(color=line, width=1.5)),
-        dict(type="circle", x0=FIELD_Y / 2 - 9.15, y0=depth - 9.15,
-             x1=FIELD_Y / 2 + 9.15, y1=depth + 9.15, line=dict(color=line, width=1)),
-        dict(type="rect", x0=18, y0=0, x1=62, y1=18, line=dict(color=line, width=1)),
-        dict(type="rect", x0=30, y0=0, x1=50, y1=6, line=dict(color=line, width=1)),
-        dict(type="line", x0=36, y0=0, x1=36, y1=-1.5, line=post),
-        dict(type="line", x0=44, y0=0, x1=44, y1=-1.5, line=post),
-        dict(type="line", x0=36, y0=0, x1=44, y1=0, line=post),
+        dict(type="line", x0=0, y0=0, x1=FIELD_Y, y1=0, line=dict(color=line, width=1.5)),
+        dict(type="circle", x0=FIELD_Y / 2 - 9.15, y0=-9.15,
+             x1=FIELD_Y / 2 + 9.15, y1=9.15, line=dict(color=line, width=1)),
+        dict(type="rect", x0=18, y0=depth - 18, x1=62, y1=depth, line=dict(color=line, width=1)),
+        dict(type="rect", x0=30, y0=depth - 6, x1=50, y1=depth, line=dict(color=line, width=1)),
+        dict(type="line", x0=36, y0=depth, x1=36, y1=depth + 1.5, line=post),
+        dict(type="line", x0=44, y0=depth, x1=44, y1=depth + 1.5, line=post),
+        dict(type="line", x0=36, y0=depth, x1=44, y1=depth, line=post),
     ]
 
 
 def _plotly_vertical_shots_layout(fig, selected_label=None):
-    """Goal mouth on top, vertical attacking half-pitch below."""
-    shapes = _goal_frame_plotly_shapes() + _vertical_half_pitch_shapes()
-    annotations = [
-        dict(text="Goal Mouth", x=0.5, xref="paper", y=1.02, yref="paper",
-             showarrow=False, font=dict(size=11, color="#a0a0b5"), xanchor="center"),
-    ]
+    """Vertical attacking half-pitch with goal mouth below (matches other pitch chart footprint)."""
+    shapes = _vertical_half_pitch_shapes() + _goal_frame_plotly_shapes()
+    annotations = []
     if selected_label:
         annotations.append(
-            dict(text=selected_label, x=0.5, xref="paper", y=0.56, yref="paper",
+            dict(text=selected_label, x=0.5, xref="paper", y=0.52, yref="paper",
                  showarrow=False, font=dict(size=10, color="#fde047"), xanchor="center")
         )
     else:
         annotations.append(
-            dict(text="Click a shot below", x=0.5, xref="paper", y=0.56, yref="paper",
+            dict(text="Click a shot — goal appears below", x=0.5, xref="paper", y=0.52, yref="paper",
                  showarrow=False, font=dict(size=10, color="#666"), xanchor="center")
         )
     depth = FIELD_X - SHOT_HALF_X
     fig.update_layout(
         shapes=shapes,
         paper_bgcolor="#1a1a2e", plot_bgcolor="#1a1a2e",
-        height=520, margin=dict(l=8, r=8, t=28, b=8),
-        xaxis=dict(visible=False, range=[-2, FIELD_Y + 2], domain=[0.08, 0.92]),
-        yaxis=dict(visible=False, range=[-4, depth + 6], scaleanchor="x", scaleratio=1),
+        height=SHOT_MAP_HEIGHT,
+        margin=dict(l=4, r=4, t=8, b=4),
+        xaxis=dict(visible=False, range=[-2, FIELD_Y + 2], domain=[0.06, 0.94]),
+        yaxis=dict(visible=False, range=[-4, depth + 4], scaleanchor="x", scaleratio=1,
+                   domain=[0.22, 0.98]),
         xaxis2=dict(visible=False, range=[-2.0, GOAL_WIDTH + 2.0], domain=[0.28, 0.72]),
         yaxis2=dict(visible=False, range=[-0.4, GOAL_HEIGHT + 0.5], scaleanchor="x2", scaleratio=1,
-                    domain=[0.72, 0.98]),
+                    domain=[0.02, 0.18]),
         showlegend=True,
-        legend=dict(orientation="h", yanchor="top", y=-0.02, xanchor="center", x=0.5,
-                    bgcolor="rgba(26,26,46,0.6)", font=dict(size=9, color="#ffffff")),
+        legend=dict(orientation="h", yanchor="top", y=1.0, xanchor="center", x=0.5,
+                    bgcolor="rgba(26,26,46,0.6)", font=dict(size=8, color="#ffffff")),
         annotations=annotations,
         clickmode="event+select",
     )
 
 
 def draw_shots_map(df, selected_shot_id=None):
-    """Vertical half-pitch + goal mouth on top. Only the clicked shot appears in the goal."""
+    """Vertical half-pitch + goal mouth below. Click a shot to show it on the goal frame."""
     df = df.reset_index(drop=True).copy()
     df = df[df["x"] >= SHOT_HALF_X].copy()
+    df = _ensure_shot_goal_coords(df)
     df["shot_id"] = range(len(df))
     fig = go.Figure()
     lookup = {}
     curve_num = 0
 
     groups = [
-        ("Goal", df[df["is_goal"]], COLOR_GOAL, "star", 16),
-        ("On Target", df[(~df["is_goal"]) & (df["is_on_target"])], COLOR_SHOT_ON, "circle", 12),
-        ("Blocked", df[df["is_blocked"]], COLOR_SHOT_BLOCKED, "diamond", 13),
-        ("Off Target", df[df["is_off_target"]], COLOR_SHOT_OFF, "x", 12),
+        ("Goal", df[df["is_goal"]], COLOR_GOAL, "star", 14),
+        ("On Target", df[(~df["is_goal"]) & (df["is_on_target"])], COLOR_SHOT_ON, "circle", 11),
+        ("Blocked", df[df["is_blocked"]], COLOR_SHOT_BLOCKED, "diamond", 12),
+        ("Off Target", df[df["is_off_target"]], COLOR_SHOT_OFF, "x", 11),
     ]
 
     selected_label = None
     selected_row = None
     if selected_shot_id is not None and selected_shot_id in df["shot_id"].values:
         selected_row = df.loc[df["shot_id"] == selected_shot_id].iloc[0]
-        if selected_row["has_goal_mouth"]:
-            selected_label = (
-                f"{selected_row['type']} — goal ({float(selected_row['gx']):.1f}m × "
-                f"{float(selected_row['gy']):.1f}m)"
-            )
-        else:
-            selected_label = f"{selected_row['type']} — no goal-mouth data (blocked)"
+        est_note = " (est.)" if bool(selected_row.get("goal_estimated", False)) else ""
+        selected_label = (
+            f"{selected_row['type']}{est_note} — goal ({float(selected_row['gx']):.1f}m × "
+            f"{float(selected_row['gy']):.1f}m)"
+        )
 
     for name, gdf, color, symbol, size in groups:
         if gdf.empty:
-            fig.add_trace(go.Scatter(
-                x=[None], y=[None], mode="markers",
-                marker=dict(size=11, color=color, symbol=symbol, line=dict(color="white", width=1)),
-                name=name, showlegend=True, hoverinfo="skip",
-            ))
             continue
 
-        vx, vy, sizes, opacities, line_widths = [], [], [], [], []
+        vx, vy, sizes, opacities, line_widths, custom_ids = [], [], [], [], [], []
         for _, r in gdf.iterrows():
             px, py = _sb_to_vertical(r["x"], r["y"])
             vx.append(px)
             vy.append(py)
             sid = int(r["shot_id"])
             is_sel = sid == selected_shot_id
-            sizes.append(size * 1.5 if is_sel else size)
+            sizes.append(size * 1.45 if is_sel else size)
             opacities.append(1.0 if is_sel else 0.85)
-            line_widths.append(3.5 if is_sel else 1.2)
+            line_widths.append(3.0 if is_sel else 1.2)
+            custom_ids.append(sid)
 
-        for local_i, (_, r) in enumerate(gdf.iterrows()):
-            lookup[(curve_num, local_i)] = int(r["shot_id"])
+        for local_i, sid in enumerate(custom_ids):
+            lookup[(curve_num, local_i)] = sid
 
         fig.add_trace(go.Scatter(
             x=vx, y=vy, mode="markers",
@@ -1535,24 +1571,29 @@ def draw_shots_map(df, selected_shot_id=None):
                 size=sizes, color=color, symbol=symbol, opacity=opacities,
                 line=dict(color="#ffffff", width=line_widths),
             ),
+            customdata=custom_ids,
             name=name,
             hovertemplate=f"<b>{name}</b><br>Click to show in goal<extra></extra>",
         ))
         curve_num += 1
 
-    if selected_row is not None and bool(selected_row["has_goal_mouth"]):
+    if selected_row is not None:
         sel_color = COLOR_GOAL if selected_row["is_goal"] else (
-            COLOR_SHOT_ON if selected_row["is_on_target"] else COLOR_SHOT_OFF
+            COLOR_SHOT_ON if selected_row["is_on_target"] else (
+                COLOR_SHOT_BLOCKED if selected_row["is_blocked"] else COLOR_SHOT_OFF
+            )
         )
         sel_symbol = "star" if selected_row["is_goal"] else (
-            "circle" if selected_row["is_on_target"] else "x"
+            "circle" if selected_row["is_on_target"] else (
+                "diamond" if selected_row["is_blocked"] else "x"
+            )
         )
         fig.add_trace(go.Scatter(
             x=[float(selected_row["gx"])], y=[float(selected_row["gy"])],
             mode="markers", xaxis="x2", yaxis="y2",
             marker=dict(
-                size=22, color=sel_color, symbol=sel_symbol,
-                line=dict(color="#ffffff", width=3),
+                size=20, color=sel_color, symbol=sel_symbol,
+                line=dict(color="#ffffff", width=2.5),
             ),
             showlegend=False, hoverinfo="skip",
         ))
@@ -1658,6 +1699,7 @@ def draw_metric_chart(df_scores, metric_label="Total Passes", avg_mode="Average"
     return fig
 
 ELEGANT_CHART_ACCENTS = ["#3b82f6", "#10b981", "#a78bfa", "#f59e0b", "#38bdf8", "#f97316", "#ec4899", "#14b8a6", "#eab308"]
+ELEGANT_BOX_BORDER = "#3a3a50"
 
 def _evo_split(df, n):
     """Split a match-ordered dataframe into first-N and last-N periods."""
@@ -1671,10 +1713,9 @@ def _evo_split(df, n):
 
 
 def _elegant_comparison_bar(title, val_first, val_last, suffix="", category="passes", n_first=10, n_last=10):
-    """Elegant bar: first bar bordered by delta color; last bar filled green/red by delta."""
+    """Elegant bar with uniform dark-gray card border and compact bars."""
     improved = val_last >= val_first
     pct_color = "#34d399" if improved else "#f87171"
-    box_border = EVO_CATEGORY_COLORS.get(category, PASS_TONES[1])
     base = max(abs(val_first), 1e-9)
     delta_pct = (val_last - val_first) / base * 100.0
     badge = f"▲ +{delta_pct:.0f}%" if improved else f"▼ {delta_pct:.0f}%"
@@ -1684,13 +1725,13 @@ def _elegant_comparison_bar(title, val_first, val_last, suffix="", category="pas
         x=[f"First {n_first}", f"Last {n_last}"],
         y=[val_first, val_last],
         marker=dict(
-            color=[f"rgba(148,163,184,0.45)", pct_color],
-            line=dict(color=[pct_color, pct_color], width=[2.5, 2.0]),
+            color=["rgba(148,163,184,0.42)", "rgba(148,163,184,0.62)"],
+            line=dict(color=[ELEGANT_BOX_BORDER, ELEGANT_BOX_BORDER], width=[1.2, 1.2]),
         ),
         text=[f"{val_first:.2f}{suffix}", f"{val_last:.2f}{suffix}"],
         textposition="outside",
-        textfont=dict(size=13, color="#ffffff"),
-        width=[0.38, 0.38],
+        textfont=dict(size=12, color="#ffffff"),
+        width=[0.24, 0.24],
         hovertemplate="%{x}<br>" + title + ": %{y:.2f}" + suffix + "<extra></extra>",
         cliponaxis=False,
     ))
@@ -1710,10 +1751,10 @@ def _elegant_comparison_bar(title, val_first, val_last, suffix="", category="pas
         xaxis=dict(showgrid=False, zeroline=False, tickfont=dict(size=11, color="#c7cdda")),
         title=dict(text=title, x=0.5, xanchor="center", font=dict(size=14, color="#eef1f7")),
         showlegend=False,
-        bargap=0.18,
+        bargap=0.06,
         shapes=[
             dict(type="rect", xref="paper", yref="paper", x0=0, y0=0, x1=1, y1=1,
-                 line=dict(color=box_border, width=1.5), fillcolor="rgba(26,26,46,0.45)"),
+                 line=dict(color=ELEGANT_BOX_BORDER, width=1.5), fillcolor="rgba(26,26,46,0.45)"),
             dict(type="line", xref="paper", yref="paper", x0=0.04, y0=0.14, x1=0.96, y1=0.14,
                  line=dict(color="rgba(255,255,255,0.08)", width=1)),
         ],
@@ -2221,7 +2262,7 @@ with tab_dash:
             st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Offensive Duels Map</div>', unsafe_allow_html=True)
             st.image(img_od_game, use_container_width=True)
         with col_om3:
-            st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Shots Map <span style="font-size:11px;color:#888">(click a shot — goal appears above)</span></div>', unsafe_allow_html=True)
+            st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Shots Map <span style="font-size:11px;color:#888">(click a shot — goal appears below)</span></div>', unsafe_allow_html=True)
             shot_event = st.plotly_chart(
                 fig_sh_game, use_container_width=True,
                 on_select="rerun", selection_mode="points", key="shots_map_select",
