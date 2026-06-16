@@ -1384,7 +1384,7 @@ def draw_touches_heatmap(df):
         cmap_touch = LinearSegmentedColormap.from_list(
             "touch", ["#252845", "#2e3560", "#3b82f6", "#22d3ee", "#fde047"]
         )
-        bin_stat = pitch.bin_statistic(df["x"].values, df["y"].values, statistic="count", bins=(24, 16))
+        bin_stat = pitch.bin_statistic(df["x"].values, df["y"].values, statistic="count", bins=(12, 8))
         mesh = pitch.heatmap(
             bin_stat, ax=ax, cmap=cmap_touch,
             edgecolors="#2a3050", linewidth=0.35,
@@ -1400,14 +1400,19 @@ def draw_touches_heatmap(df):
 GOAL_WIDTH = 7.32
 GOAL_HEIGHT = 2.44
 
+def _sb_to_vertical(x, y):
+    """StatsBomb horizontal -> vertical half-pitch (goal at top, py=0 is the goal line)."""
+    return float(y), float(FIELD_X - float(x))
+
+
 def _goal_frame_plotly_shapes():
-    """Traves, travessão e rede no painel Goal Mouth (eixo x2/y2)."""
+    """Goal frame on the top panel (x2/y2)."""
     post = dict(color="rgba(255,255,255,0.95)", width=3)
-    net = dict(color="rgba(255,255,255,0.10)", width=1)
+    net = dict(color="rgba(255,255,255,0.12)", width=1)
     ground = dict(color="rgba(255,255,255,0.35)", width=1.5)
     shapes = [
         dict(type="rect", x0=0, y0=0, x1=GOAL_WIDTH, y1=GOAL_HEIGHT,
-             xref="x2", yref="y2", fillcolor="rgba(22,28,50,0.75)", line=dict(width=0)),
+             xref="x2", yref="y2", fillcolor="rgba(22,28,50,0.85)", line=dict(width=0)),
         dict(type="line", x0=0, y0=0, x1=0, y1=GOAL_HEIGHT, xref="x2", yref="y2", line=post),
         dict(type="line", x0=GOAL_WIDTH, y0=0, x1=GOAL_WIDTH, y1=GOAL_HEIGHT, xref="x2", yref="y2", line=post),
         dict(type="line", x0=0, y0=GOAL_HEIGHT, x1=GOAL_WIDTH, y1=GOAL_HEIGHT, xref="x2", yref="y2", line=post),
@@ -1420,56 +1425,64 @@ def _goal_frame_plotly_shapes():
     return shapes
 
 
-def _plotly_half_pitch_layout(fig, extra_shapes=None, selected_label=None):
-    """Attacking half-pitch background (StatsBomb coords, x >= 60)."""
+def _vertical_half_pitch_shapes():
+    """Attacking half-pitch drawn vertically (goal at top). px=0..80, py=0..60."""
     line = "rgba(255,255,255,0.45)"
     post = dict(color="rgba(255,255,255,0.95)", width=3)
-    cx = FIELD_X - 9.15
-    shapes = [
-        dict(type="rect", x0=SHOT_HALF_X, y0=0, x1=FIELD_X, y1=FIELD_Y, line=dict(color=line, width=1.2)),
-        dict(type="line", x0=SHOT_HALF_X, y0=0, x1=SHOT_HALF_X, y1=FIELD_Y, line=dict(color=line, width=1.5)),
-        dict(type="circle", x0=cx - 9.15, y0=FIELD_Y / 2 - 9.15,
-             x1=cx + 9.15, y1=FIELD_Y / 2 + 9.15, line=dict(color=line, width=1)),
-        dict(type="rect", x0=102, y0=18, x1=120, y1=62, line=dict(color=line, width=1)),
-        dict(type="rect", x0=114, y0=30, x1=120, y1=50, line=dict(color=line, width=1)),
-        dict(type="line", x0=120, y0=36, x1=120, y1=44, line=post),
-        dict(type="line", x0=120, y0=36, x1=122, y1=36, line=post),
-        dict(type="line", x0=120, y0=44, x1=122, y1=44, line=post),
+    depth = FIELD_X - SHOT_HALF_X
+    return [
+        dict(type="rect", x0=0, y0=0, x1=FIELD_Y, y1=depth, line=dict(color=line, width=1.2)),
+        dict(type="line", x0=0, y0=depth, x1=FIELD_Y, y1=depth, line=dict(color=line, width=1.5)),
+        dict(type="circle", x0=FIELD_Y / 2 - 9.15, y0=depth - 9.15,
+             x1=FIELD_Y / 2 + 9.15, y1=depth + 9.15, line=dict(color=line, width=1)),
+        dict(type="rect", x0=18, y0=0, x1=62, y1=18, line=dict(color=line, width=1)),
+        dict(type="rect", x0=30, y0=0, x1=50, y1=6, line=dict(color=line, width=1)),
+        dict(type="line", x0=36, y0=0, x1=36, y1=-1.5, line=post),
+        dict(type="line", x0=44, y0=0, x1=44, y1=-1.5, line=post),
+        dict(type="line", x0=36, y0=0, x1=44, y1=0, line=post),
     ]
-    if extra_shapes:
-        shapes.extend(extra_shapes)
+
+
+def _plotly_vertical_shots_layout(fig, selected_label=None):
+    """Goal mouth on top, vertical attacking half-pitch below."""
+    shapes = _goal_frame_plotly_shapes() + _vertical_half_pitch_shapes()
     annotations = [
-        dict(text="Goal Mouth <span style='font-size:10px;color:#888'>(click a shot)</span>",
-             x=0.86, xref="paper", y=1.06, yref="paper",
-             showarrow=False, font=dict(size=11, color="#a0a0b5")),
+        dict(text="Goal Mouth", x=0.5, xref="paper", y=1.02, yref="paper",
+             showarrow=False, font=dict(size=11, color="#a0a0b5"), xanchor="center"),
     ]
     if selected_label:
         annotations.append(
-            dict(text=selected_label, x=0.33, xref="paper", y=1.06, yref="paper",
-                 showarrow=False, font=dict(size=11, color="#fde047"))
+            dict(text=selected_label, x=0.5, xref="paper", y=0.56, yref="paper",
+                 showarrow=False, font=dict(size=10, color="#fde047"), xanchor="center")
         )
+    else:
+        annotations.append(
+            dict(text="Click a shot below", x=0.5, xref="paper", y=0.56, yref="paper",
+                 showarrow=False, font=dict(size=10, color="#666"), xanchor="center")
+        )
+    depth = FIELD_X - SHOT_HALF_X
     fig.update_layout(
         shapes=shapes,
         paper_bgcolor="#1a1a2e", plot_bgcolor="#1a1a2e",
-        height=340, margin=dict(l=8, r=8, t=44, b=10),
-        xaxis=dict(visible=False, range=[SHOT_HALF_X - 4, FIELD_X + 4], constrain="domain", domain=[0, 0.66]),
-        yaxis=dict(visible=False, range=[-4, 84], scaleanchor="x", scaleratio=1),
-        xaxis2=dict(visible=False, range=[-1.2, GOAL_WIDTH + 1.2], domain=[0.72, 1.0]),
-        yaxis2=dict(visible=False, range=[-1.0, GOAL_HEIGHT + 0.8], scaleanchor="x2", scaleratio=1),
+        height=520, margin=dict(l=8, r=8, t=28, b=8),
+        xaxis=dict(visible=False, range=[-2, FIELD_Y + 2], domain=[0.08, 0.92]),
+        yaxis=dict(visible=False, range=[-4, depth + 6], scaleanchor="x", scaleratio=1),
+        xaxis2=dict(visible=False, range=[-2.0, GOAL_WIDTH + 2.0], domain=[0.28, 0.72]),
+        yaxis2=dict(visible=False, range=[-0.4, GOAL_HEIGHT + 0.5], scaleanchor="x2", scaleratio=1,
+                    domain=[0.72, 0.98]),
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=0.0, xanchor="left", x=0.0,
+        legend=dict(orientation="h", yanchor="top", y=-0.02, xanchor="center", x=0.5,
                     bgcolor="rgba(26,26,46,0.6)", font=dict(size=9, color="#ffffff")),
-        hoverlabel=dict(bgcolor="#11162a", bordercolor="#444466",
-                        font=dict(family="monospace", size=12, color="#ffffff"), align="left"),
         annotations=annotations,
         clickmode="event+select",
     )
 
 
 def draw_shots_map(df, selected_shot_id=None):
-    """Half-pitch shot map + goal mouth. Click a shot to highlight it in the goal panel."""
+    """Vertical half-pitch + goal mouth on top. Only the clicked shot appears in the goal."""
     df = df.reset_index(drop=True).copy()
-    df["shot_id"] = df.index
+    df = df[df["x"] >= SHOT_HALF_X].copy()
+    df["shot_id"] = range(len(df))
     fig = go.Figure()
     lookup = {}
     curve_num = 0
@@ -1482,9 +1495,16 @@ def draw_shots_map(df, selected_shot_id=None):
     ]
 
     selected_label = None
+    selected_row = None
     if selected_shot_id is not None and selected_shot_id in df["shot_id"].values:
-        sel = df.loc[df["shot_id"] == selected_shot_id].iloc[0]
-        selected_label = f"Selected: {sel['type']} ({sel['x']:.0f}, {sel['y']:.0f})"
+        selected_row = df.loc[df["shot_id"] == selected_shot_id].iloc[0]
+        if selected_row["has_goal_mouth"]:
+            selected_label = (
+                f"{selected_row['type']} — goal ({float(selected_row['gx']):.1f}m × "
+                f"{float(selected_row['gy']):.1f}m)"
+            )
+        else:
+            selected_label = f"{selected_row['type']} — no goal-mouth data (blocked)"
 
     for name, gdf, color, symbol, size in groups:
         if gdf.empty:
@@ -1495,52 +1515,49 @@ def draw_shots_map(df, selected_shot_id=None):
             ))
             continue
 
-        sizes, opacities, line_widths = [], [], []
+        vx, vy, sizes, opacities, line_widths = [], [], [], [], []
         for _, r in gdf.iterrows():
+            px, py = _sb_to_vertical(r["x"], r["y"])
+            vx.append(px)
+            vy.append(py)
             sid = int(r["shot_id"])
             is_sel = sid == selected_shot_id
-            sizes.append(size * 1.45 if is_sel else size)
-            opacities.append(1.0 if is_sel else 0.82)
-            line_widths.append(3.0 if is_sel else 1.1)
+            sizes.append(size * 1.5 if is_sel else size)
+            opacities.append(1.0 if is_sel else 0.85)
+            line_widths.append(3.5 if is_sel else 1.2)
 
         for local_i, (_, r) in enumerate(gdf.iterrows()):
             lookup[(curve_num, local_i)] = int(r["shot_id"])
 
         fig.add_trace(go.Scatter(
-            x=gdf["x"], y=gdf["y"], mode="markers",
+            x=vx, y=vy, mode="markers",
             marker=dict(
                 size=sizes, color=color, symbol=symbol, opacity=opacities,
                 line=dict(color="#ffffff", width=line_widths),
             ),
             name=name,
-            customdata=gdf["shot_id"].tolist(),
-            hovertemplate=f"<b>{name}</b><br>Click to highlight in goal<extra></extra>",
+            hovertemplate=f"<b>{name}</b><br>Click to show in goal<extra></extra>",
         ))
         curve_num += 1
 
-        gdf_goal = gdf[gdf["has_goal_mouth"]].copy()
-        if gdf_goal.empty:
-            continue
-
-        gm_sizes, gm_opacities, gm_line_widths = [], [], []
-        for _, r in gdf_goal.iterrows():
-            sid = int(r["shot_id"])
-            is_sel = sid == selected_shot_id
-            gm_sizes.append(max(14, size + 4) if is_sel else max(7, size - 4))
-            gm_opacities.append(1.0 if is_sel else 0.22)
-            gm_line_widths.append(3.0 if is_sel else 0.8)
-
+    if selected_row is not None and bool(selected_row["has_goal_mouth"]):
+        sel_color = COLOR_GOAL if selected_row["is_goal"] else (
+            COLOR_SHOT_ON if selected_row["is_on_target"] else COLOR_SHOT_OFF
+        )
+        sel_symbol = "star" if selected_row["is_goal"] else (
+            "circle" if selected_row["is_on_target"] else "x"
+        )
         fig.add_trace(go.Scatter(
-            x=gdf_goal["gx"], y=gdf_goal["gy"], mode="markers",
-            xaxis="x2", yaxis="y2",
+            x=[float(selected_row["gx"])], y=[float(selected_row["gy"])],
+            mode="markers", xaxis="x2", yaxis="y2",
             marker=dict(
-                size=gm_sizes, color=color, symbol=symbol, opacity=gm_opacities,
-                line=dict(color="#ffffff", width=gm_line_widths),
+                size=22, color=sel_color, symbol=sel_symbol,
+                line=dict(color="#ffffff", width=3),
             ),
-            name=name, showlegend=False, hoverinfo="skip",
+            showlegend=False, hoverinfo="skip",
         ))
 
-    _plotly_half_pitch_layout(fig, extra_shapes=_goal_frame_plotly_shapes(), selected_label=selected_label)
+    _plotly_vertical_shots_layout(fig, selected_label=selected_label)
     return fig, lookup
 
 # PLOTLY CHARTS
@@ -1654,12 +1671,10 @@ def _evo_split(df, n):
 
 
 def _elegant_comparison_bar(title, val_first, val_last, suffix="", category="passes", n_first=10, n_last=10):
-    """Refined comparison bar: category-colored box, per-bar green/red borders."""
+    """Elegant bar: first bar bordered by delta color; last bar filled green/red by delta."""
     improved = val_last >= val_first
-    accent = "#34d399" if improved else "#f87171"
+    pct_color = "#34d399" if improved else "#f87171"
     box_border = EVO_CATEGORY_COLORS.get(category, PASS_TONES[1])
-    bar0_border = "#34d399" if val_first >= val_last else "#f87171"
-    bar1_border = "#34d399" if val_last >= val_first else "#f87171"
     base = max(abs(val_first), 1e-9)
     delta_pct = (val_last - val_first) / base * 100.0
     badge = f"▲ +{delta_pct:.0f}%" if improved else f"▼ {delta_pct:.0f}%"
@@ -1669,8 +1684,8 @@ def _elegant_comparison_bar(title, val_first, val_last, suffix="", category="pas
         x=[f"First {n_first}", f"Last {n_last}"],
         y=[val_first, val_last],
         marker=dict(
-            color=[f"rgba(148,163,184,0.50)", f"rgba(148,163,184,0.50)"],
-            line=dict(color=[bar0_border, bar1_border], width=[2.5, 2.5]),
+            color=[f"rgba(148,163,184,0.45)", pct_color],
+            line=dict(color=[pct_color, pct_color], width=[2.5, 2.0]),
         ),
         text=[f"{val_first:.2f}{suffix}", f"{val_last:.2f}{suffix}"],
         textposition="outside",
@@ -1681,7 +1696,7 @@ def _elegant_comparison_bar(title, val_first, val_last, suffix="", category="pas
     ))
     fig.add_annotation(
         x=0.5, xref="paper", y=1.02, yref="paper", yanchor="bottom",
-        text=f"<span style='color:{accent};font-weight:700'>{badge}</span>",
+        text=f"<span style='color:{pct_color};font-weight:700'>{badge}</span>",
         showarrow=False, font=dict(size=12), align="center",
     )
     fig.update_layout(
@@ -2017,34 +2032,31 @@ with tab_dash:
         if force_avg:
             with col_s1:
                 section_card("📋 Pass Overview", PASS_TONES[0], [
-                    ("Total Passes", f"{s_game['total_p90']:.2f}", f"Total: {s_real['total_passes']}"),
-                    ("Successful %", f"{s_game['accuracy_pct']:.2f}%", f"Total: {s_real['successful_passes']}"),
+                    ("Total Passes", f"{s_game['total_p90']:.2f}"),
+                    ("Successful %", f"{s_game['accuracy_pct']:.2f}%"),
                 ])
             with col_s2:
                 section_card("📊 Advanced", PASS_TONES[1], [
-                    ("Advanced Passes", f"{s_game['adv_p90']:.2f}", f"Total: {s_real['adv_made']}"),
+                    ("Advanced Passes", f"{s_game['adv_p90']:.2f}"),
                     ("Advanced Acc %", f"{s_game['adv_acc_pct']:.2f}%", f"({s_real['adv_made']}/{s_real['adv_att']})"),
                 ])
             with col_s3:
                 section_card("⚡ Impact", PASS_TONES[2], [
-                    ("% Positive Impact", f"{s_game['pos_pct']:.2f}%", f"Total: {s_real['pos_count']}"),
-                    ("Pass Impact Value", f"{s_game['xt_p90']:.3f}", f"Total: {s_real['sum_dxt']:.2f}"),
+                    ("% Positive Impact", f"{s_game['pos_pct']:.2f}%"),
+                    ("Pass Impact Value", f"{s_game['xt_p90']:.3f}"),
                 ])
         else:
             with col_s1:
                 cmp_section_card("📋 Pass Overview", PASS_TONES[0], [
                     ("Total Passes", s_game["total_p90"], f"{s_avg['total_p90']:.1f}",
-                     f"{s_game['total_p90']:.1f}", f"{s_avg['total_p90']:.1f}", "",
-                     f"Total: {s_real['total_passes']}"),
+                     f"{s_game['total_p90']:.1f}", f"{s_avg['total_p90']:.1f}", ""),
                     ("Successful %", s_game["accuracy_pct"], s_avg["accuracy_pct"],
-                     f"{s_game['accuracy_pct']:.1f}%", f"{s_avg['accuracy_pct']:.1f}%", "",
-                     f"Total: {s_real['successful_passes']}"),
+                     f"{s_game['accuracy_pct']:.1f}%", f"{s_avg['accuracy_pct']:.1f}%", ""),
                 ])
             with col_s2:
                 cmp_section_card("📊 Advanced", PASS_TONES[1], [
                     ("Advanced Passes", s_game["adv_p90"], f"{s_avg['adv_p90']:.1f}",
-                     f"{s_game['adv_p90']:.1f}", f"{s_avg['adv_p90']:.1f}", "",
-                     f"Total: {s_real['adv_made']}"),
+                     f"{s_game['adv_p90']:.1f}", f"{s_avg['adv_p90']:.1f}", ""),
                     ("Advanced Acc %", s_game["adv_acc_pct"], s_avg["adv_acc_pct"],
                      f"{s_game['adv_acc_pct']:.1f}%", f"{s_avg['adv_acc_pct']:.1f}%", "",
                      f"({s_real['adv_made']}/{s_real['adv_att']})"),
@@ -2053,12 +2065,10 @@ with tab_dash:
                 cmp_section_card("⚡ Impact", PASS_TONES[2], [
                     ("% Positive Impact", s_game["pos_pct"], s_avg["pos_pct"],
                      f"{s_game['pos_pct']:.1f}%", f"{s_avg['pos_pct']:.1f}%",
-                     "Passes that generated a positive impact based on where they ended on the field",
-                     f"Total: {s_real['pos_count']}"),
+                     "Passes that generated a positive impact based on where they ended on the field"),
                     ("Pass Impact Value", s_game["xt_p90"], s_avg["xt_p90"],
                      f"{s_game['xt_p90']:.3f}", f"{s_avg['xt_p90']:.3f}",
-                     "Calculation used to define the value of pass impact based on expected threat (xT) progression",
-                     f"Total: {s_real['sum_dxt']:.2f}"),
+                     "Calculation used to define the value of pass impact based on expected threat (xT) progression"),
                 ])
 
     with sub_tab_def:
@@ -2123,34 +2133,31 @@ with tab_dash:
         if force_avg_def:
             with col_ds1:
                 section_card("🛡️ General", DEF_TONES[0], [
-                    ("Defensive Actions", f"{d_game['total_actions_p90']:.2f}", f"Total: {d_real['total_actions']}"),
-                    ("Actions in Opp. Field", f"{d_game['actions_attacking_p90']:.2f}", f"Total: {d_real['actions_attacking']}"),
+                    ("Defensive Actions", f"{d_game['total_actions_p90']:.2f}"),
+                    ("Actions in Opp. Field", f"{d_game['actions_attacking_p90']:.2f}"),
                 ])
             with col_ds2:
                 section_card("⚔️ Duels", DEF_TONES[1], [
-                    ("Defensive Duels", f"{d_game['duels_p90']:.2f}", f"Total: {d_real['total_duels']}"),
+                    ("Defensive Duels", f"{d_game['duels_p90']:.2f}"),
                     ("% Duels Won", f"{d_game['duels_won_pct']:.2f}%", f"({d_real['duels_won']}/{d_real['total_duels']})"),
                 ])
             with col_ds3:
                 section_card("👁️ Interceptions", DEF_TONES[2], [
-                    ("Interceptions", f"{d_game['interceptions_p90']:.2f}", f"Total: {d_real['interceptions']}"),
-                    ("Interceptions in Opp Field", f"{d_game['interceptions_attacking_p90']:.2f}", f"Total: {d_real['interceptions_attacking']}"),
+                    ("Interceptions", f"{d_game['interceptions_p90']:.2f}"),
+                    ("Interceptions in Opp Field", f"{d_game['interceptions_attacking_p90']:.2f}"),
                 ])
         else:
             with col_ds1:
                 cmp_section_card("🛡️ General", DEF_TONES[0], [
                     ("Defensive Actions", d_game["total_actions_p90"], f"{d_avg['total_actions_p90']:.1f}",
-                     f"{d_game['total_actions_p90']:.1f}", f"{d_avg['total_actions_p90']:.1f}", "",
-                     f"Total: {d_real['total_actions']}"),
+                     f"{d_game['total_actions_p90']:.1f}", f"{d_avg['total_actions_p90']:.1f}", ""),
                     ("Actions in Opp. Field", d_game["actions_attacking_p90"], f"{d_avg['actions_attacking_p90']:.1f}",
-                     f"{d_game['actions_attacking_p90']:.1f}", f"{d_avg['actions_attacking_p90']:.1f}", "",
-                     f"Total: {d_real['actions_attacking']}"),
+                     f"{d_game['actions_attacking_p90']:.1f}", f"{d_avg['actions_attacking_p90']:.1f}", ""),
                 ])
             with col_ds2:
                 cmp_section_card("⚔️ Duels", DEF_TONES[1], [
                     ("Defensive Duels", d_game["duels_p90"], f"{d_avg['duels_p90']:.1f}",
-                     f"{d_game['duels_p90']:.1f}", f"{d_avg['duels_p90']:.1f}", "",
-                     f"Total: {d_real['total_duels']}"),
+                     f"{d_game['duels_p90']:.1f}", f"{d_avg['duels_p90']:.1f}", ""),
                     ("% Duels Won", d_game["duels_won_pct"], d_avg["duels_won_pct"],
                      f"{d_game['duels_won_pct']:.1f}%", f"{d_avg['duels_won_pct']:.1f}%", "",
                      f"({d_real['duels_won']}/{d_real['total_duels']})"),
@@ -2158,11 +2165,9 @@ with tab_dash:
             with col_ds3:
                 cmp_section_card("👁️ Interceptions", DEF_TONES[2], [
                     ("Interceptions", d_game["interceptions_p90"], f"{d_avg['interceptions_p90']:.1f}",
-                     f"{d_game['interceptions_p90']:.1f}", f"{d_avg['interceptions_p90']:.1f}", "",
-                     f"Total: {d_real['interceptions']}"),
+                     f"{d_game['interceptions_p90']:.1f}", f"{d_avg['interceptions_p90']:.1f}", ""),
                     ("Interceptions in Opp Field", d_game["interceptions_attacking_p90"], f"{d_avg['interceptions_attacking_p90']:.1f}",
-                     f"{d_game['interceptions_attacking_p90']:.1f}", f"{d_avg['interceptions_attacking_p90']:.1f}", "",
-                     f"Total: {d_real['interceptions_attacking']}"),
+                     f"{d_game['interceptions_attacking_p90']:.1f}", f"{d_avg['interceptions_attacking_p90']:.1f}", ""),
                 ])
 
     with sub_tab_off:
@@ -2216,7 +2221,7 @@ with tab_dash:
             st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Offensive Duels Map</div>', unsafe_allow_html=True)
             st.image(img_od_game, use_container_width=True)
         with col_om3:
-            st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Shots Map <span style="font-size:11px;color:#888">(click a shot to highlight in goal)</span></div>', unsafe_allow_html=True)
+            st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Shots Map <span style="font-size:11px;color:#888">(click a shot — goal appears above)</span></div>', unsafe_allow_html=True)
             shot_event = st.plotly_chart(
                 fig_sh_game, use_container_width=True,
                 on_select="rerun", selection_mode="points", key="shots_map_select",
@@ -2234,34 +2239,31 @@ with tab_dash:
         if force_avg_off:
             with col_os1:
                 section_card("📋 Overview", OFF_TONES[0], [
-                    ("Touches", f"{o_game['touches_p90']:.2f}", f"Total: {o_real['touches']}"),
-                    ("Final Third Touches", f"{o_game['f3_touches_p90']:.2f}", f"Total: {o_real['f3_touches']}"),
+                    ("Touches", f"{o_game['touches_p90']:.2f}"),
+                    ("Final Third Touches", f"{o_game['f3_touches_p90']:.2f}"),
                 ])
             with col_os2:
                 section_card("⚔️ Offensive Duels", OFF_TONES[1], [
-                    ("Offensive Duels", f"{o_game['off_duels_p90']:.2f}", f"Total: {o_real['off_duels']}"),
+                    ("Offensive Duels", f"{o_game['off_duels_p90']:.2f}"),
                     ("% Duels Won", f"{o_game['off_duels_won_pct']:.2f}%", f"({o_real['off_duels_won']}/{o_real['off_duels']})"),
                 ])
             with col_os3:
                 section_card("🥅 Shots", OFF_TONES[2], [
-                    ("Shots", f"{o_game['shots_p90']:.2f}", f"Total: {o_real['shots']}"),
-                    ("Goals", f"{o_game['goals']:.2f}", f"Total: {o_real['goals']}"),
+                    ("Shots", f"{o_game['shots_p90']:.2f}"),
+                    ("Goals", f"{o_game['goals']:.2f}"),
                 ])
         else:
             with col_os1:
                 cmp_section_card("📋 Overview", OFF_TONES[0], [
                     ("Touches", o_game["touches_p90"], f"{o_avg['touches_p90']:.1f}",
-                     f"{o_game['touches_p90']:.1f}", f"{o_avg['touches_p90']:.1f}", "",
-                     f"Total: {o_real['touches']}"),
+                     f"{o_game['touches_p90']:.1f}", f"{o_avg['touches_p90']:.1f}", ""),
                     ("Final Third Touches", o_game["f3_touches_p90"], f"{o_avg['f3_touches_p90']:.1f}",
-                     f"{o_game['f3_touches_p90']:.1f}", f"{o_avg['f3_touches_p90']:.1f}", "",
-                     f"Total: {o_real['f3_touches']}"),
+                     f"{o_game['f3_touches_p90']:.1f}", f"{o_avg['f3_touches_p90']:.1f}", ""),
                 ])
             with col_os2:
                 cmp_section_card("⚔️ Offensive Duels", OFF_TONES[1], [
                     ("Offensive Duels", o_game["off_duels_p90"], f"{o_avg['off_duels_p90']:.1f}",
-                     f"{o_game['off_duels_p90']:.1f}", f"{o_avg['off_duels_p90']:.1f}", "",
-                     f"Total: {o_real['off_duels']}"),
+                     f"{o_game['off_duels_p90']:.1f}", f"{o_avg['off_duels_p90']:.1f}", ""),
                     ("% Duels Won", o_game["off_duels_won_pct"], o_avg["off_duels_won_pct"],
                      f"{o_game['off_duels_won_pct']:.1f}%", f"{o_avg['off_duels_won_pct']:.1f}%", "",
                      f"({o_real['off_duels_won']}/{o_real['off_duels']})"),
@@ -2269,11 +2271,9 @@ with tab_dash:
             with col_os3:
                 cmp_section_card("🥅 Shots", OFF_TONES[2], [
                     ("Shots", o_game["shots_p90"], f"{o_avg['shots_p90']:.1f}",
-                     f"{o_game['shots_p90']:.1f}", f"{o_avg['shots_p90']:.1f}", "",
-                     f"Total: {o_real['shots']}"),
+                     f"{o_game['shots_p90']:.1f}", f"{o_avg['shots_p90']:.1f}", ""),
                     ("Goals", o_game["goals"], o_avg["goals"],
-                     f"{o_game['goals']:.0f}", f"{o_avg['goals']:.2f}", "",
-                     f"Total: {o_real['goals']}"),
+                     f"{o_game['goals']:.0f}", f"{o_avg['goals']:.2f}", ""),
                 ])
 
 with tab_evo:
