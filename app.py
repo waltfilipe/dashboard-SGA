@@ -234,6 +234,68 @@ def _generate_generic_dataset(seed=_GEN_SEED, n_matches=20):
 
 BASE_MATCHES_DATA, DEFENSIVE_MATCHES_DATA, MATCH_MINUTES = _generate_generic_dataset()
 
+
+# OFFENSIVE RANDOM DATA GENERATOR (offensive duels, touches & shots)
+# Modest volumes per match so the maps stay readable (not exaggerated).
+def _gen_off_duel(rng, won):
+    # offensive duels concentrate in the attacking half / final third
+    x = _gen_clampx(rng.gauss(80, 16))
+    y = _gen_clampy(rng.gauss(40, 20))
+    return ("OFF_DUEL_WON" if won else "OFF_DUEL_LOST", _gen_r2(x), _gen_r2(y))
+
+
+def _gen_match_off_duels(rng):
+    n = rng.randint(3, 12)
+    win_rate = rng.uniform(0.40, 0.65)
+    rows = []
+    for _ in range(n):
+        rows.append(_gen_off_duel(rng, rng.random() < win_rate))
+    order = {"OFF_DUEL_WON": 0, "OFF_DUEL_LOST": 1}
+    rows.sort(key=lambda r: order[r[0]])
+    return rows
+
+
+def _gen_match_touches(rng):
+    # touches: more numerous, biased toward attacking midfield / final third
+    n = rng.randint(20, 45)
+    rows = []
+    for _ in range(n):
+        x = _gen_clampx(rng.gauss(72, 23))
+        y = _gen_clampy(rng.gauss(40, 22))
+        rows.append((_gen_r2(x), _gen_r2(y)))
+    return rows
+
+
+def _gen_match_shots(rng):
+    # shots: few per match (some matches with none), around the penalty area
+    n = rng.randint(0, 5)
+    rows = []
+    for _ in range(n):
+        x = _gen_clampx(rng.gauss(104, 7))
+        y = _gen_clampy(rng.gauss(40, 9))
+        roll = rng.random()
+        if roll < 0.13:
+            outcome = "GOAL"
+        elif roll < 0.50:
+            outcome = "ON_TARGET"
+        else:
+            outcome = "OFF_TARGET"
+        rows.append((outcome, _gen_r2(x), _gen_r2(y)))
+    order = {"GOAL": 0, "ON_TARGET": 1, "OFF_TARGET": 2}
+    rows.sort(key=lambda r: order[r[0]])
+    return rows
+
+
+def _generate_offensive_dataset(match_names, seed=_GEN_SEED + 7):
+    rng = _random.Random(seed)
+    duels = {name: _gen_match_off_duels(rng) for name in match_names}
+    touches = {name: _gen_match_touches(rng) for name in match_names}
+    shots = {name: _gen_match_shots(rng) for name in match_names}
+    return duels, touches, shots
+
+
+OFFENSIVE_DUELS_DATA, TOUCHES_DATA, SHOTS_DATA = _generate_offensive_dataset(list(BASE_MATCHES_DATA.keys()))
+
 # HELPERS
 def apply_date_mapping(name: str) -> str:
     # Generic dataset: no name remapping needed.
@@ -359,6 +421,30 @@ for match_name, events in DEFENSIVE_MATCHES_DATA.items():
     df_def["is_interception"] = df_def["type"] == "INTERCEPTION"
     df_def["in_funnel"] = df_def.apply(lambda r: is_in_funnel_zone(r["x"], r["y"]), axis=1)
     defensive_dfs_by_match[match_name] = df_def
+
+# OFFENSIVE DATA LOADING
+offensive_duels_dfs_by_match = {}
+for match_name, events in OFFENSIVE_DUELS_DATA.items():
+    df_od = pd.DataFrame(events, columns=["type", "x", "y"])
+    df_od["match"] = match_name
+    df_od["is_won"] = df_od["type"] == "OFF_DUEL_WON"
+    df_od["is_lost"] = df_od["type"] == "OFF_DUEL_LOST"
+    offensive_duels_dfs_by_match[match_name] = df_od
+
+touches_dfs_by_match = {}
+for match_name, events in TOUCHES_DATA.items():
+    df_to = pd.DataFrame(events, columns=["x", "y"])
+    df_to["match"] = match_name
+    df_to["is_final_third"] = df_to["x"] >= FINAL_THIRD_LINE_X
+    touches_dfs_by_match[match_name] = df_to
+
+shots_dfs_by_match = {}
+for match_name, events in SHOTS_DATA.items():
+    df_sh = pd.DataFrame(events, columns=["type", "x", "y"])
+    df_sh["match"] = match_name
+    df_sh["is_goal"] = df_sh["type"] == "GOAL"
+    df_sh["is_on_target"] = df_sh["type"].isin(["GOAL", "ON_TARGET"])
+    shots_dfs_by_match[match_name] = df_sh
 
 # STATS & SCORES
 def compute_stats(df: pd.DataFrame, match_name: str) -> dict:
@@ -677,6 +763,37 @@ def compute_defensive_evolution_df(dfs_dict, df_scores=None):
             'grade': round(grade, 1) if grade is not None else None,
         })
     return pd.DataFrame(records)
+
+def compute_offensive_stats(touches_df, duels_df, shots_df, match_name: str) -> dict:
+    if match_name == "All Matches":
+        mins = sum(get_match_minutes(k) for k in touches_dfs_by_match)
+    else:
+        mins = get_match_minutes(match_name)
+    p90_factor = 90.0 / mins if mins > 0 else 1.0
+    touches_total = len(touches_df)
+    f3_touches = int(touches_df["is_final_third"].sum()) if touches_total > 0 else 0
+    off_duels_total = len(duels_df)
+    off_duels_won = int(duels_df["is_won"].sum()) if off_duels_total > 0 else 0
+    off_duels_won_pct = (off_duels_won / off_duels_total * 100.0) if off_duels_total > 0 else 0.0
+    shots_total = len(shots_df)
+    goals = int(shots_df["is_goal"].sum()) if shots_total > 0 else 0
+    shots_on_target = int(shots_df["is_on_target"].sum()) if shots_total > 0 else 0
+    shots_on_target_pct = (shots_on_target / shots_total * 100.0) if shots_total > 0 else 0.0
+    return {
+        "touches": touches_total,
+        "touches_p90": round(touches_total * p90_factor, 1),
+        "f3_touches": f3_touches,
+        "f3_touches_p90": round(f3_touches * p90_factor, 1),
+        "off_duels": off_duels_total,
+        "off_duels_p90": round(off_duels_total * p90_factor, 1),
+        "off_duels_won": off_duels_won,
+        "off_duels_won_pct": round(off_duels_won_pct, 1),
+        "shots": shots_total,
+        "shots_p90": round(shots_total * p90_factor, 2),
+        "goals": goals,
+        "shots_on_target": shots_on_target,
+        "shots_on_target_pct": round(shots_on_target_pct, 1),
+    }
 
 # UI HELPERS
 def _safe_pct_diff(a: float, b: float) -> float:
@@ -1014,6 +1131,79 @@ def draw_defensive_xt_map(df):
     _attack_arrow(fig, has_cbar=True)
     return _save_fig(fig), fig
 
+# OFFENSIVE PITCH DRAW HELPERS
+COLOR_OFF_DUEL_WON = "#10b981"
+COLOR_OFF_DUEL_LOST = "#E07070"
+COLOR_GOAL = "#ffd700"
+COLOR_SHOT_ON = "#10b981"
+COLOR_SHOT_OFF = "#E07070"
+
+def draw_offensive_duels_map(df):
+    fig, ax, pitch = _base_pitch()
+    for _, row in df.iterrows():
+        if row["is_won"]:
+            color, marker, s = COLOR_OFF_DUEL_WON, "o", 90
+        else:
+            color, marker, s = COLOR_OFF_DUEL_LOST, "X", 100
+        pitch.scatter(row["x"], row["y"], s=s, marker=marker, color=color,
+                      edgecolors="white", linewidths=0.8, ax=ax, zorder=6, alpha=0.85)
+    leg = ax.legend(
+        handles=[
+            Line2D([0], [0], marker="o", color="w", markerfacecolor=COLOR_OFF_DUEL_WON, markersize=7, label="Duel Won", alpha=0.90),
+            Line2D([0], [0], marker="X", color="w", markerfacecolor=COLOR_OFF_DUEL_LOST, markersize=8, label="Duel Lost", alpha=0.90),
+        ],
+        loc="upper left", bbox_to_anchor=(0.01, 0.99),
+        frameon=True, facecolor="#1a1a2e", edgecolor="#444466",
+        fontsize=6.5, labelspacing=0.35, borderpad=0.4
+    )
+    for t in leg.get_texts():
+        t.set_color("white")
+    leg.get_frame().set_alpha(0.90)
+    _attack_arrow(fig)
+    return _save_fig(fig), fig
+
+def draw_touches_heatmap(df):
+    fig, ax, pitch = _base_pitch()
+    if len(df) > 0:
+        cmap_touch = LinearSegmentedColormap.from_list(
+            "touch", ["#1a1a2e", "#27306b", "#3b82f6", "#22d3ee", "#fde047"]
+        )
+        bin_stat = pitch.bin_statistic(df["x"].values, df["y"].values, statistic="count", bins=(12, 8))
+        mesh = pitch.heatmap(bin_stat, ax=ax, cmap=cmap_touch, edgecolors="#1a1a2e", alpha=0.85, zorder=2)
+        cbar = fig.colorbar(mesh, ax=ax, fraction=0.020, pad=0.02, shrink=0.60)
+        cbar.set_label("Touches", color="#ffffff", fontsize=8)
+        cbar.ax.yaxis.set_tick_params(color="#ffffff", labelsize=7)
+        plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color="#ffffff")
+    _attack_arrow(fig, has_cbar=True)
+    return _save_fig(fig), fig
+
+def draw_shots_map(df):
+    fig, ax, pitch = _base_pitch()
+    for _, row in df.iterrows():
+        if row["is_goal"]:
+            color, marker, s = COLOR_GOAL, "*", 230
+        elif row["is_on_target"]:
+            color, marker, s = COLOR_SHOT_ON, "o", 95
+        else:
+            color, marker, s = COLOR_SHOT_OFF, "X", 95
+        pitch.scatter(row["x"], row["y"], s=s, marker=marker, color=color,
+                      edgecolors="white", linewidths=0.8, ax=ax, zorder=6, alpha=0.90)
+    leg = ax.legend(
+        handles=[
+            Line2D([0], [0], marker="*", color="w", markerfacecolor=COLOR_GOAL, markersize=11, label="Goal", alpha=0.95),
+            Line2D([0], [0], marker="o", color="w", markerfacecolor=COLOR_SHOT_ON, markersize=7, label="On Target", alpha=0.90),
+            Line2D([0], [0], marker="X", color="w", markerfacecolor=COLOR_SHOT_OFF, markersize=8, label="Off Target", alpha=0.90),
+        ],
+        loc="upper left", bbox_to_anchor=(0.01, 0.99),
+        frameon=True, facecolor="#1a1a2e", edgecolor="#444466",
+        fontsize=6.5, labelspacing=0.35, borderpad=0.4
+    )
+    for t in leg.get_texts():
+        t.set_color("white")
+    leg.get_frame().set_alpha(0.90)
+    _attack_arrow(fig)
+    return _save_fig(fig), fig
+
 # PLOTLY CHARTS
 def draw_total_passes_chart(df_scores):
     fig = go.Figure()
@@ -1332,7 +1522,7 @@ def draw_comparison_bar(title, val_first, val_last, suffix=""):
     color_last = "#10b981" if val_last >= val_first else "#E07070"
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=["First 9 Matches", "Last 9 Matches"],
+        x=["First 10 Matches", "Last 10 Matches"],
         y=[val_first, val_last],
         marker_color=["#444466", color_last],
         text=[f"{val_first:.2f}{suffix}", f"{val_last:.2f}{suffix}"],
@@ -1372,6 +1562,10 @@ st.sidebar.markdown("""
 
 num_matches = len(dfs_by_match)
 all_match_stats = [compute_stats(dfs_by_match[m], m) for m in dfs_by_match]
+offensive_all_stats = [
+    compute_offensive_stats(touches_dfs_by_match[m], offensive_duels_dfs_by_match[m], shots_dfs_by_match[m], m)
+    for m in touches_dfs_by_match
+]
 
 # TABS & LAYOUT
 tab_graf, tab_dash, tab_evo = st.tabs(["Charts & Analysis", "Detailed Dashboard", "Development"])
@@ -1448,6 +1642,39 @@ with tab_graf:
                     ("Interceptions in Opp Field p90", f"{avg_int_att_p90:.1f}", f"Total: {total_int_att_all}"),
                 ])
 
+        offensive_num_matches = len(touches_dfs_by_match)
+        if offensive_num_matches > 0:
+            total_touches_all = sum(s['touches'] for s in offensive_all_stats)
+            total_f3_touches_all = sum(s['f3_touches'] for s in offensive_all_stats)
+            total_off_duels_all = sum(s['off_duels'] for s in offensive_all_stats)
+            total_off_duels_won_all = sum(s['off_duels_won'] for s in offensive_all_stats)
+            total_shots_all = sum(s['shots'] for s in offensive_all_stats)
+            total_goals_all = sum(s['goals'] for s in offensive_all_stats)
+            total_on_target_all = sum(s['shots_on_target'] for s in offensive_all_stats)
+            avg_touches_p90 = sum(s['touches_p90'] for s in offensive_all_stats) / offensive_num_matches
+            avg_f3_touches_p90 = sum(s['f3_touches_p90'] for s in offensive_all_stats) / offensive_num_matches
+            avg_off_duels_p90 = sum(s['off_duels_p90'] for s in offensive_all_stats) / offensive_num_matches
+            avg_off_duels_won_pct = sum(s['off_duels_won_pct'] for s in offensive_all_stats) / offensive_num_matches
+            avg_shots_p90 = sum(s['shots_p90'] for s in offensive_all_stats) / offensive_num_matches
+
+            st.markdown("### Offensive Actions")
+            col_o1, col_o2, col_o3 = st.columns(3)
+            with col_o1:
+                section_card("📋 Overview", C_BLUE_PASTEL, [
+                    ("Touches p90", f"{avg_touches_p90:.1f}", f"Total: {total_touches_all}"),
+                    ("Final Third Touches p90", f"{avg_f3_touches_p90:.1f}", f"Total: {total_f3_touches_all}"),
+                ])
+            with col_o2:
+                section_card("⚔️ Offensive Duels", C_GREEN_PASTEL, [
+                    ("Offensive Duels p90", f"{avg_off_duels_p90:.1f}", f"Total: {total_off_duels_all}"),
+                    ("% Duels Won", f"{avg_off_duels_won_pct:.1f}%", f"({total_off_duels_won_all}/{total_off_duels_all})"),
+                ])
+            with col_o3:
+                section_card("🥅 Shots", C_AMBER_PASTEL, [
+                    ("Shots p90", f"{avg_shots_p90:.2f}", f"Total: {total_shots_all}"),
+                    ("Goals", f"{total_goals_all}", f"On Target: {total_on_target_all}"),
+                ])
+
         st.markdown(f'<div style="text-align:center;font-size:12px;color:#666666;margin-top:12px">{num_matches} matches collected</div>', unsafe_allow_html=True)
         st.markdown("", unsafe_allow_html=True)
 
@@ -1501,7 +1728,7 @@ with tab_graf:
                 st.warning("Not enough data to generate charts.")
 
 with tab_dash:
-    sub_tab_passes, sub_tab_def = st.tabs(["Passes", "Defensive Actions"])
+    sub_tab_passes, sub_tab_def, sub_tab_off = st.tabs(["Passes", "Defensive Actions", "Offensive Actions"])
 
     with sub_tab_passes:
         st.markdown("### Match Filters")
@@ -1700,89 +1927,175 @@ with tab_dash:
                     ("Interceptions in Opp Field", d_game["interceptions_attacking_p90"], f"{d_avg['interceptions_attacking_p90']:.1f}"),
                 ])
 
+    with sub_tab_off:
+        st.markdown("### Match Filter")
+        col_of1, col_of2 = st.columns(2)
+        with col_of1:
+            off_match_options = ["All Matches"] + list(touches_dfs_by_match.keys())
+            selected_off_match = st.selectbox("Select Match", options=off_match_options, index=0, key="off_match")
+
+        if selected_off_match == "All Matches":
+            touches_game = pd.concat(touches_dfs_by_match.values(), ignore_index=True)
+            duels_game = pd.concat(offensive_duels_dfs_by_match.values(), ignore_index=True)
+            shots_game = pd.concat(shots_dfs_by_match.values(), ignore_index=True)
+            off_match_name_for_stats = "All Matches"
+        else:
+            touches_game = touches_dfs_by_match[selected_off_match].copy()
+            duels_game = offensive_duels_dfs_by_match[selected_off_match].copy()
+            shots_game = shots_dfs_by_match[selected_off_match].copy()
+            off_match_name_for_stats = selected_off_match
+
+        o_game = compute_offensive_stats(touches_game, duels_game, shots_game, off_match_name_for_stats)
+        o_avg = {}
+        if len(offensive_all_stats) > 0:
+            for k in offensive_all_stats[0].keys():
+                if isinstance(offensive_all_stats[0][k], (int, float)):
+                    o_avg[k] = sum(s[k] for s in offensive_all_stats) / len(offensive_all_stats)
+                else:
+                    o_avg[k] = 0
+        else:
+            o_avg = o_game.copy()
+
+        force_avg_off = selected_off_match == "All Matches"
+        if force_avg_off:
+            o_game = o_avg.copy()
+
+        st.markdown("---")
+        img_od_game, fig_od_game = draw_offensive_duels_map(duels_game); plt.close(fig_od_game)
+        img_th_game, fig_th_game = draw_touches_heatmap(touches_game); plt.close(fig_th_game)
+        img_sh_game, fig_sh_game = draw_shots_map(shots_game); plt.close(fig_sh_game)
+
+        col_om1, col_om2, col_om3 = st.columns(3)
+        with col_om1:
+            st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Offensive Duels Map</div>', unsafe_allow_html=True)
+            st.image(img_od_game, use_container_width=True)
+        with col_om2:
+            st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Touches Heatmap</div>', unsafe_allow_html=True)
+            st.image(img_th_game, use_container_width=True)
+        with col_om3:
+            st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Shots Map</div>', unsafe_allow_html=True)
+            st.image(img_sh_game, use_container_width=True)
+
+        st.markdown("", unsafe_allow_html=True)
+        col_os1, col_os2, col_os3 = st.columns(3)
+        if force_avg_off:
+            with col_os1:
+                section_card("📋 Overview", C_BLUE_PASTEL, [
+                    ("Touches", f"{o_game['touches_p90']:.2f}"),
+                    ("Final Third Touches", f"{o_game['f3_touches_p90']:.2f}"),
+                ])
+            with col_os2:
+                section_card("⚔️ Offensive Duels", C_GREEN_PASTEL, [
+                    ("Offensive Duels", f"{o_game['off_duels_p90']:.2f}"),
+                    ("% Duels Won", f"{o_game['off_duels_won_pct']:.2f}%"),
+                ])
+            with col_os3:
+                section_card("🥅 Shots", C_AMBER_PASTEL, [
+                    ("Shots", f"{o_game['shots_p90']:.2f}"),
+                    ("Goals", f"{o_game['goals']:.2f}"),
+                ])
+        else:
+            with col_os1:
+                cmp_section_card("📋 Overview", C_BLUE_PASTEL, [
+                    ("Touches", o_game["touches_p90"], f"{o_avg['touches_p90']:.1f}"),
+                    ("Final Third Touches", o_game["f3_touches_p90"], f"{o_avg['f3_touches_p90']:.1f}"),
+                ])
+            with col_os2:
+                cmp_section_card("⚔️ Offensive Duels", C_GREEN_PASTEL, [
+                    ("Offensive Duels", o_game["off_duels_p90"], f"{o_avg['off_duels_p90']:.1f}"),
+                    ("% Duels Won", o_game["off_duels_won_pct"], o_avg["off_duels_won_pct"],
+                     f"{o_game['off_duels_won_pct']:.1f}%", f"{o_avg['off_duels_won_pct']:.1f}%"),
+                ])
+            with col_os3:
+                cmp_section_card("🥅 Shots", C_AMBER_PASTEL, [
+                    ("Shots", o_game["shots_p90"], f"{o_avg['shots_p90']:.1f}"),
+                    ("Goals", o_game["goals"], o_avg["goals"],
+                     f"{o_game['goals']:.0f}", f"{o_avg['goals']:.2f}"),
+                ])
+
 with tab_evo:
     sub_tab_evo_passes, sub_tab_evo_def = st.tabs(["Passes", "Defensive Actions"])
 
     with sub_tab_evo_passes:
-        st.markdown("### First 9 vs Last 9 Matches")
-        st.markdown("Comparing the average passing performance between the first 9 and the last 9 matches to analyze player evolution.")
+        st.markdown("### First 10 vs Last 10 Matches")
+        st.markdown("Comparing the average passing performance between the first 10 and the last 10 matches to analyze player evolution.")
         df_scores = compute_match_scores(dfs_by_match, defensive_dfs_by_match)
         if len(df_scores) > 0:
-            if len(df_scores) < 18:
+            if len(df_scores) < 20:
                 st.info(f"Note: Only {len(df_scores)} matches available. The comparison will overlap or use available data.")
-            first_9 = df_scores.head(9)
-            last_9 = df_scores.tail(9)
+            first_10 = df_scores.head(10)
+            last_10 = df_scores.tail(10)
 
             r1c1, r1c2, r1c3 = st.columns(3)
             with r1c1:
-                fig_grade = draw_comparison_bar("Pass Grade", first_9["Grade"].mean(), last_9["Grade"].mean())
+                fig_grade = draw_comparison_bar("Pass Grade", first_10["Grade"].mean(), last_10["Grade"].mean())
                 st.plotly_chart(fig_grade, use_container_width=True)
             with r1c2:
-                fig_xt_evo = draw_comparison_bar("Σ Pass Impact", first_9["xt_p90"].mean(), last_9["xt_p90"].mean())
+                fig_xt_evo = draw_comparison_bar("Σ Pass Impact", first_10["xt_p90"].mean(), last_10["xt_p90"].mean())
                 st.plotly_chart(fig_xt_evo, use_container_width=True)
             with r1c3:
-                fig_high_xt_evo = draw_comparison_bar("High Impact Passes", first_9["high_xt_p90"].mean(), last_9["high_xt_p90"].mean())
+                fig_high_xt_evo = draw_comparison_bar("High Impact Passes", first_10["high_xt_p90"].mean(), last_10["high_xt_p90"].mean())
                 st.plotly_chart(fig_high_xt_evo, use_container_width=True)
 
             r2c1, r2c2, r2c3 = st.columns(3)
             with r2c1:
-                fig_prog_evo = draw_comparison_bar("Progressive Passes", first_9["prog_p90"].mean(), last_9["prog_p90"].mean())
+                fig_prog_evo = draw_comparison_bar("Progressive Passes", first_10["prog_p90"].mean(), last_10["prog_p90"].mean())
                 st.plotly_chart(fig_prog_evo, use_container_width=True)
             with r2c2:
-                fig_f3_evo = draw_comparison_bar("Final Third Passes", first_9["f3_p90"].mean(), last_9["f3_p90"].mean())
+                fig_f3_evo = draw_comparison_bar("Final Third Passes", first_10["f3_p90"].mean(), last_10["f3_p90"].mean())
                 st.plotly_chart(fig_f3_evo, use_container_width=True)
             with r2c3:
-                fig_dz_evo = draw_comparison_bar("Dangerous Zone Passes", first_9["dz_p90"].mean(), last_9["dz_p90"].mean())
+                fig_dz_evo = draw_comparison_bar("Dangerous Zone Passes", first_10["dz_p90"].mean(), last_10["dz_p90"].mean())
                 st.plotly_chart(fig_dz_evo, use_container_width=True)
 
             r3c1, r3c2, r3c3 = st.columns(3)
             with r3c1:
-                fig_acc_evo = draw_comparison_bar("Successful Passes %", first_9["accuracy_pct"].mean(), last_9["accuracy_pct"].mean(), suffix="%")
+                fig_acc_evo = draw_comparison_bar("Successful Passes %", first_10["accuracy_pct"].mean(), last_10["accuracy_pct"].mean(), suffix="%")
                 st.plotly_chart(fig_acc_evo, use_container_width=True)
             with r3c2:
-                fig_long_evo = draw_comparison_bar("Long Pass Accuracy %", first_9["long_acc_pct"].mean(), last_9["long_acc_pct"].mean(), suffix="%")
+                fig_long_evo = draw_comparison_bar("Long Pass Accuracy %", first_10["long_acc_pct"].mean(), last_10["long_acc_pct"].mean(), suffix="%")
                 st.plotly_chart(fig_long_evo, use_container_width=True)
             with r3c3:
-                fig_prog_acc_evo = draw_comparison_bar("Progressive Accuracy %", first_9["prog_acc_pct"].mean(), last_9["prog_acc_pct"].mean(), suffix="%")
+                fig_prog_acc_evo = draw_comparison_bar("Progressive Accuracy %", first_10["prog_acc_pct"].mean(), last_10["prog_acc_pct"].mean(), suffix="%")
                 st.plotly_chart(fig_prog_acc_evo, use_container_width=True)
         else:
             st.warning("Not enough data to generate evolution charts.")
 
     with sub_tab_evo_def:
-        st.markdown("### First 9 vs Last 9 Matches")
-        st.markdown("Comparing the average defensive performance between the first 9 and the last 9 matches.")
+        st.markdown("### First 10 vs Last 10 Matches")
+        st.markdown("Comparing the average defensive performance between the first 10 and the last 10 matches.")
         df_scores = compute_match_scores(dfs_by_match, defensive_dfs_by_match)
         df_def_evo = compute_defensive_evolution_df(defensive_dfs_by_match, df_scores)
         if len(df_def_evo) > 0:
-            if len(df_def_evo) < 18:
+            if len(df_def_evo) < 20:
                 st.info(f"Note: Only {len(df_def_evo)} matches available. The comparison will overlap or use available data.")
-            first_9_def = df_def_evo.head(9)
-            last_9_def = df_def_evo.tail(9)
+            first_10_def = df_def_evo.head(10)
+            last_10_def = df_def_evo.tail(10)
 
             rd1c1, rd1c2, rd1c3 = st.columns(3)
             with rd1c1:
-                g1 = first_9_def["grade"].dropna()
-                g2 = last_9_def["grade"].dropna()
+                g1 = first_10_def["grade"].dropna()
+                g2 = last_10_def["grade"].dropna()
                 v1 = g1.mean() if len(g1) > 0 else 0
                 v2 = g2.mean() if len(g2) > 0 else 0
                 fig_grade_def = draw_comparison_bar("Defensive Actions Grade", v1, v2)
                 st.plotly_chart(fig_grade_def, use_container_width=True)
             with rd1c2:
-                fig_duels_won = draw_comparison_bar("Duels Won p90", first_9_def["duels_won_p90"].mean(), last_9_def["duels_won_p90"].mean())
+                fig_duels_won = draw_comparison_bar("Duels Won p90", first_10_def["duels_won_p90"].mean(), last_10_def["duels_won_p90"].mean())
                 st.plotly_chart(fig_duels_won, use_container_width=True)
             with rd1c3:
-                fig_duels_pct = draw_comparison_bar("% Duels Won", first_9_def["duels_won_pct"].mean(), last_9_def["duels_won_pct"].mean(), suffix="%")
+                fig_duels_pct = draw_comparison_bar("% Duels Won", first_10_def["duels_won_pct"].mean(), last_10_def["duels_won_pct"].mean(), suffix="%")
                 st.plotly_chart(fig_duels_pct, use_container_width=True)
 
             rd2c1, rd2c2, rd2c3 = st.columns(3)
             with rd2c1:
-                fig_def_act = draw_comparison_bar("Defensive Actions p90", first_9_def["def_actions_p90"].mean(), last_9_def["def_actions_p90"].mean())
+                fig_def_act = draw_comparison_bar("Defensive Actions p90", first_10_def["def_actions_p90"].mean(), last_10_def["def_actions_p90"].mean())
                 st.plotly_chart(fig_def_act, use_container_width=True)
             with rd2c2:
-                fig_int_evo = draw_comparison_bar("Interceptions p90", first_9_def["interceptions_p90"].mean(), last_9_def["interceptions_p90"].mean())
+                fig_int_evo = draw_comparison_bar("Interceptions p90", first_10_def["interceptions_p90"].mean(), last_10_def["interceptions_p90"].mean())
                 st.plotly_chart(fig_int_evo, use_container_width=True)
             with rd2c3:
-                fig_funnel_evo = draw_comparison_bar("Funnel Actions p90", first_9_def["funnel_actions_p90"].mean(), last_9_def["funnel_actions_p90"].mean())
+                fig_funnel_evo = draw_comparison_bar("Funnel Actions p90", first_10_def["funnel_actions_p90"].mean(), last_10_def["funnel_actions_p90"].mean())
                 st.plotly_chart(fig_funnel_evo, use_container_width=True)
         else:
             st.warning("Not enough data to generate defensive evolution charts.")
