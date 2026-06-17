@@ -830,7 +830,10 @@ def compute_defensive_stats(df: pd.DataFrame, match_name: str) -> dict:
     attacking_half = df[df["is_attacking_half"]]
     actions_attacking = len(attacking_half)
     interceptions_attacking = int(attacking_half["is_interception"].sum())
-    funnel_actions = int(df["in_funnel"].sum())
+    funnel_df = df[df["in_funnel"]]
+    funnel_actions = len(funnel_df)
+    funnel_successful = int(funnel_df["is_duel_won"].sum() + funnel_df["is_interception"].sum())
+    funnel_success_pct = (funnel_successful / funnel_actions * 100.0) if funnel_actions > 0 else 0.0
     return {
         "total_actions": total_actions,
         "total_actions_p90": round(total_actions * p90_factor, 1),
@@ -846,6 +849,8 @@ def compute_defensive_stats(df: pd.DataFrame, match_name: str) -> dict:
         "interceptions_attacking_p90": round(interceptions_attacking * p90_factor, 1),
         "funnel_actions": funnel_actions,
         "funnel_actions_p90": round(funnel_actions * p90_factor, 1),
+        "funnel_successful": funnel_successful,
+        "funnel_success_pct": round(funnel_success_pct, 1),
     }
 
 def compute_defensive_match_scores(dfs_dict):
@@ -1384,10 +1389,10 @@ def draw_touches_heatmap(df):
         cmap_touch = LinearSegmentedColormap.from_list(
             "touch", ["#252845", "#2e3560", "#3b82f6", "#22d3ee", "#fde047"]
         )
-        bin_stat = pitch.bin_statistic(df["x"].values, df["y"].values, statistic="count", bins=(12, 8))
+        bin_stat = pitch.bin_statistic(df["x"].values, df["y"].values, statistic="count", bins=(6, 4))
         mesh = pitch.heatmap(
             bin_stat, ax=ax, cmap=cmap_touch,
-            edgecolors="#2a3050", linewidth=0.35,
+            edgecolors="#2a3050", linewidth=0.6,
             alpha=0.88, zorder=2,
         )
         cbar = fig.colorbar(mesh, ax=ax, fraction=0.020, pad=0.02, shrink=0.60)
@@ -1397,209 +1402,51 @@ def draw_touches_heatmap(df):
     _attack_arrow(fig, has_cbar=True)
     return _save_fig(fig), fig
 
-GOAL_WIDTH = 7.32
-GOAL_HEIGHT = 2.44
-SHOT_MAP_HEIGHT = int(FIG_H * 72)
-
-def _sb_to_vertical(x, y):
-    """StatsBomb horizontal -> vertical half-pitch (goal at bottom, py=depth is the goal line)."""
-    return float(y), float(x) - SHOT_HALF_X
-
-
-def _estimate_goal_mouth(x, y, outcome):
-    """Estimate goal-mouth (gx, gy) from shot location when coordinates are missing."""
-    x, y = float(x), float(y)
-    lateral = (y - GOAL_Y) / (FIELD_Y / 2.0)
-    depth_factor = np.clip((x - SHOT_HALF_X) / max(GOAL_X - SHOT_HALF_X, 1e-6), 0.0, 1.0)
-    seed = abs(hash((round(x, 2), round(y, 2), str(outcome)))) % 1000 / 1000.0
-
-    if outcome in ("GOAL", "ON_TARGET", "BLOCKED"):
-        gx = float(np.clip(GOAL_WIDTH / 2 + lateral * 3.2, 0.25, GOAL_WIDTH - 0.25))
-        gy = float(np.clip(GOAL_HEIGHT * (0.22 + 0.58 * depth_factor + 0.08 * seed), 0.12, GOAL_HEIGHT - 0.12))
-        return round(gx, 2), round(gy, 2)
-
-    if abs(lateral) > 0.35:
-        gx = float(-0.6 - seed * 0.8 if lateral < 0 else GOAL_WIDTH + 0.6 + seed * 0.8)
-        gy = float(np.clip(GOAL_HEIGHT / 2 + lateral * 0.35, -0.2, GOAL_HEIGHT + 0.2))
-    elif seed > 0.55:
-        gx = float(np.clip(GOAL_WIDTH / 2 + lateral * 2.5, -0.3, GOAL_WIDTH + 0.3))
-        gy = float(GOAL_HEIGHT + 0.35 + seed * 0.5)
-    else:
-        gx = float(np.clip(GOAL_WIDTH / 2 + lateral * 2.5, -0.3, GOAL_WIDTH + 0.3))
-        gy = float(-0.35 - seed * 0.5)
-    return round(gx, 2), round(gy, 2)
-
-
-def _ensure_shot_goal_coords(df):
-    """Fill missing goal-mouth coordinates so every shot can be shown on the goal frame."""
-    df = df.copy()
-    estimated = []
-    for idx, row in df.iterrows():
-        if pd.notna(row["gx"]) and pd.notna(row["gy"]):
-            estimated.append(False)
-        else:
-            gx, gy = _estimate_goal_mouth(row["x"], row["y"], row["type"])
-            df.at[idx, "gx"] = gx
-            df.at[idx, "gy"] = gy
-            estimated.append(True)
-    df["goal_estimated"] = estimated
-    df["has_goal_mouth"] = True
-    return df
-
-
-def _goal_frame_plotly_shapes():
-    """Goal frame on the top panel (x2/y2)."""
-    post = dict(color="rgba(255,255,255,0.95)", width=3)
-    net = dict(color="rgba(255,255,255,0.12)", width=1)
-    ground = dict(color="rgba(255,255,255,0.35)", width=1.5)
-    shapes = [
-        dict(type="rect", x0=0, y0=0, x1=GOAL_WIDTH, y1=GOAL_HEIGHT,
-             xref="x2", yref="y2", fillcolor="rgba(22,28,50,0.85)", line=dict(width=0)),
-        dict(type="line", x0=0, y0=0, x1=0, y1=GOAL_HEIGHT, xref="x2", yref="y2", line=post),
-        dict(type="line", x0=GOAL_WIDTH, y0=0, x1=GOAL_WIDTH, y1=GOAL_HEIGHT, xref="x2", yref="y2", line=post),
-        dict(type="line", x0=0, y0=GOAL_HEIGHT, x1=GOAL_WIDTH, y1=GOAL_HEIGHT, xref="x2", yref="y2", line=post),
-        dict(type="line", x0=0, y0=0, x1=GOAL_WIDTH, y1=0, xref="x2", yref="y2", line=ground),
-    ]
-    for gw in np.linspace(GOAL_WIDTH / 5, 4 * GOAL_WIDTH / 5, 4):
-        shapes.append(dict(type="line", x0=gw, y0=0, x1=gw, y1=GOAL_HEIGHT, xref="x2", yref="y2", line=net))
-    for gh in np.linspace(GOAL_HEIGHT / 3, 2 * GOAL_HEIGHT / 3, 2):
-        shapes.append(dict(type="line", x0=0, y0=gh, x1=GOAL_WIDTH, y1=gh, xref="x2", yref="y2", line=net))
-    return shapes
-
-
-def _vertical_half_pitch_shapes():
-    """Attacking half-pitch drawn vertically (goal at bottom). px=0..80, py=0..60."""
-    line = "rgba(255,255,255,0.45)"
-    post = dict(color="rgba(255,255,255,0.95)", width=3)
-    depth = FIELD_X - SHOT_HALF_X
-    return [
-        dict(type="rect", x0=0, y0=0, x1=FIELD_Y, y1=depth, line=dict(color=line, width=1.2)),
-        dict(type="line", x0=0, y0=0, x1=FIELD_Y, y1=0, line=dict(color=line, width=1.5)),
-        dict(type="circle", x0=FIELD_Y / 2 - 9.15, y0=-9.15,
-             x1=FIELD_Y / 2 + 9.15, y1=9.15, line=dict(color=line, width=1)),
-        dict(type="rect", x0=18, y0=depth - 18, x1=62, y1=depth, line=dict(color=line, width=1)),
-        dict(type="rect", x0=30, y0=depth - 6, x1=50, y1=depth, line=dict(color=line, width=1)),
-        dict(type="line", x0=36, y0=depth, x1=36, y1=depth + 1.5, line=post),
-        dict(type="line", x0=44, y0=depth, x1=44, y1=depth + 1.5, line=post),
-        dict(type="line", x0=36, y0=depth, x1=44, y1=depth, line=post),
-    ]
-
-
-def _plotly_vertical_shots_layout(fig, selected_label=None):
-    """Vertical attacking half-pitch with goal mouth below (matches other pitch chart footprint)."""
-    shapes = _vertical_half_pitch_shapes() + _goal_frame_plotly_shapes()
-    annotations = []
-    if selected_label:
-        annotations.append(
-            dict(text=selected_label, x=0.5, xref="paper", y=0.52, yref="paper",
-                 showarrow=False, font=dict(size=10, color="#fde047"), xanchor="center")
-        )
-    else:
-        annotations.append(
-            dict(text="Click a shot — goal appears below", x=0.5, xref="paper", y=0.52, yref="paper",
-                 showarrow=False, font=dict(size=10, color="#666"), xanchor="center")
-        )
-    depth = FIELD_X - SHOT_HALF_X
-    fig.update_layout(
-        shapes=shapes,
-        paper_bgcolor="#1a1a2e", plot_bgcolor="#1a1a2e",
-        height=SHOT_MAP_HEIGHT,
-        margin=dict(l=4, r=4, t=8, b=4),
-        xaxis=dict(visible=False, range=[-2, FIELD_Y + 2], domain=[0.06, 0.94]),
-        yaxis=dict(visible=False, range=[-4, depth + 4], scaleanchor="x", scaleratio=1,
-                   domain=[0.22, 0.98]),
-        xaxis2=dict(visible=False, range=[-2.0, GOAL_WIDTH + 2.0], domain=[0.28, 0.72]),
-        yaxis2=dict(visible=False, range=[-0.4, GOAL_HEIGHT + 0.5], scaleanchor="x2", scaleratio=1,
-                    domain=[0.02, 0.18]),
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="top", y=1.0, xanchor="center", x=0.5,
-                    bgcolor="rgba(26,26,46,0.6)", font=dict(size=8, color="#ffffff")),
-        annotations=annotations,
-        clickmode="event+select",
+def _base_attacking_half_pitch(bg="#1a1a2e"):
+    pitch = Pitch(
+        pitch_type="statsbomb", pitch_color=bg, line_color="#ffffff", line_alpha=0.95,
+        half=True,
     )
+    fig, ax = pitch.draw(figsize=(FIG_W, FIG_H))
+    fig.set_facecolor(bg)
+    fig.set_dpi(FIG_DPI)
+    return fig, ax, pitch
 
 
-def draw_shots_map(df, selected_shot_id=None):
-    """Vertical half-pitch + goal mouth below. Click a shot to show it on the goal frame."""
-    df = df.reset_index(drop=True).copy()
+def draw_shots_map(df):
+    """Attacking half-pitch with shot locations (same footprint as other pitch maps)."""
     df = df[df["x"] >= SHOT_HALF_X].copy()
-    df = _ensure_shot_goal_coords(df)
-    df["shot_id"] = range(len(df))
-    fig = go.Figure()
-    lookup = {}
-    curve_num = 0
-
+    fig, ax, pitch = _base_attacking_half_pitch()
     groups = [
-        ("Goal", df[df["is_goal"]], COLOR_GOAL, "star", 14),
-        ("On Target", df[(~df["is_goal"]) & (df["is_on_target"])], COLOR_SHOT_ON, "circle", 11),
-        ("Blocked", df[df["is_blocked"]], COLOR_SHOT_BLOCKED, "diamond", 12),
-        ("Off Target", df[df["is_off_target"]], COLOR_SHOT_OFF, "x", 11),
+        ("Goal", df[df["is_goal"]], COLOR_GOAL, "*", 220),
+        ("On Target", df[(~df["is_goal"]) & (df["is_on_target"])], COLOR_SHOT_ON, "o", 90),
+        ("Blocked", df[df["is_blocked"]], COLOR_SHOT_BLOCKED, "D", 80),
+        ("Off Target", df[df["is_off_target"]], COLOR_SHOT_OFF, "x", 100),
     ]
-
-    selected_label = None
-    selected_row = None
-    if selected_shot_id is not None and selected_shot_id in df["shot_id"].values:
-        selected_row = df.loc[df["shot_id"] == selected_shot_id].iloc[0]
-        est_note = " (est.)" if bool(selected_row.get("goal_estimated", False)) else ""
-        selected_label = (
-            f"{selected_row['type']}{est_note} — goal ({float(selected_row['gx']):.1f}m × "
-            f"{float(selected_row['gy']):.1f}m)"
-        )
-
-    for name, gdf, color, symbol, size in groups:
+    legend_handles = []
+    for name, gdf, color, marker, size in groups:
         if gdf.empty:
             continue
-
-        vx, vy, sizes, opacities, line_widths, custom_ids = [], [], [], [], [], []
-        for _, r in gdf.iterrows():
-            px, py = _sb_to_vertical(r["x"], r["y"])
-            vx.append(px)
-            vy.append(py)
-            sid = int(r["shot_id"])
-            is_sel = sid == selected_shot_id
-            sizes.append(size * 1.45 if is_sel else size)
-            opacities.append(1.0 if is_sel else 0.85)
-            line_widths.append(3.0 if is_sel else 1.2)
-            custom_ids.append(sid)
-
-        for local_i, sid in enumerate(custom_ids):
-            lookup[(curve_num, local_i)] = sid
-
-        fig.add_trace(go.Scatter(
-            x=vx, y=vy, mode="markers",
-            marker=dict(
-                size=sizes, color=color, symbol=symbol, opacity=opacities,
-                line=dict(color="#ffffff", width=line_widths),
-            ),
-            customdata=custom_ids,
-            name=name,
-            hovertemplate=f"<b>{name}</b><br>Click to show in goal<extra></extra>",
-        ))
-        curve_num += 1
-
-    if selected_row is not None:
-        sel_color = COLOR_GOAL if selected_row["is_goal"] else (
-            COLOR_SHOT_ON if selected_row["is_on_target"] else (
-                COLOR_SHOT_BLOCKED if selected_row["is_blocked"] else COLOR_SHOT_OFF
-            )
+        pitch.scatter(
+            gdf["x"], gdf["y"], s=size, marker=marker, color=color,
+            edgecolors="white", linewidths=0.8, ax=ax, zorder=6, alpha=0.88,
         )
-        sel_symbol = "star" if selected_row["is_goal"] else (
-            "circle" if selected_row["is_on_target"] else (
-                "diamond" if selected_row["is_blocked"] else "x"
-            )
+        legend_handles.append(
+            Line2D([0], [0], marker=marker, color="w", markerfacecolor=color,
+                   markersize=7, label=name, alpha=0.90)
         )
-        fig.add_trace(go.Scatter(
-            x=[float(selected_row["gx"])], y=[float(selected_row["gy"])],
-            mode="markers", xaxis="x2", yaxis="y2",
-            marker=dict(
-                size=20, color=sel_color, symbol=sel_symbol,
-                line=dict(color="#ffffff", width=2.5),
-            ),
-            showlegend=False, hoverinfo="skip",
-        ))
-
-    _plotly_vertical_shots_layout(fig, selected_label=selected_label)
-    return fig, lookup
+    if legend_handles:
+        leg = ax.legend(
+            handles=legend_handles,
+            loc="upper left", bbox_to_anchor=(0.01, 0.99),
+            frameon=True, facecolor="#1a1a2e", edgecolor="#444466",
+            fontsize=6.5, labelspacing=0.35, borderpad=0.4,
+        )
+        for t in leg.get_texts():
+            t.set_color("white")
+        leg.get_frame().set_alpha(0.90)
+    _attack_arrow(fig)
+    return _save_fig(fig), fig
 
 # PLOTLY CHARTS
 def _avg_reference_traces(fig, x_labels, series, avg_mode, value_fmt):
@@ -1877,14 +1724,14 @@ with tab_graf:
             total_def_att_all = sum(s['actions_attacking'] for s in defensive_all_stats)
             total_duels_all = sum(s['total_duels'] for s in defensive_all_stats)
             total_duels_won_all = sum(s['duels_won'] for s in defensive_all_stats)
-            total_interceptions_all = sum(s['interceptions'] for s in defensive_all_stats)
-            total_int_att_all = sum(s['interceptions_attacking'] for s in defensive_all_stats)
+            total_funnel_all = sum(s['funnel_actions'] for s in defensive_all_stats)
+            total_funnel_success_all = sum(s['funnel_successful'] for s in defensive_all_stats)
             avg_def_actions_p90 = sum(s['total_actions_p90'] for s in defensive_all_stats) / defensive_num_matches
             avg_def_att_p90 = sum(s['actions_attacking_p90'] for s in defensive_all_stats) / defensive_num_matches
             avg_duels_p90 = sum(s['duels_p90'] for s in defensive_all_stats) / defensive_num_matches
             avg_duels_won_pct = sum(s['duels_won_pct'] for s in defensive_all_stats) / defensive_num_matches
-            avg_interceptions_p90 = sum(s['interceptions_p90'] for s in defensive_all_stats) / defensive_num_matches
-            avg_int_att_p90 = sum(s['interceptions_attacking_p90'] for s in defensive_all_stats) / defensive_num_matches
+            avg_funnel_p90 = sum(s['funnel_actions_p90'] for s in defensive_all_stats) / defensive_num_matches
+            avg_funnel_success_pct = sum(s['funnel_success_pct'] for s in defensive_all_stats) / defensive_num_matches
 
             st.markdown("### Defensive Actions")
             col_d1, col_d2, col_d3 = st.columns(3)
@@ -1899,9 +1746,9 @@ with tab_graf:
                     ("% Duels Won", f"{avg_duels_won_pct:.1f}%", f"({total_duels_won_all}/{total_duels_all})"),
                 ])
             with col_d3:
-                section_card("❌ Interceptions", DEF_TONES[2], [
-                    ("Interceptions p90", f"{avg_interceptions_p90:.1f}", f"Total: {total_interceptions_all}"),
-                    ("Interceptions in Opp Field p90", f"{avg_int_att_p90:.1f}", f"Total: {total_int_att_all}"),
+                section_card("🛡️ Funnel Protection Actions", DEF_TONES[2], [
+                    ("Funnel Protection Actions p90", f"{avg_funnel_p90:.1f}", f"Total: {total_funnel_all}"),
+                    ("% FPA Successful", f"{avg_funnel_success_pct:.1f}%", f"({total_funnel_success_all}/{total_funnel_all})"),
                 ])
 
         offensive_num_matches = len(touches_dfs_by_match)
@@ -2137,7 +1984,7 @@ with tab_dash:
             df_def_game = df_def_game_raw.copy()
 
         d_game = compute_defensive_stats(df_def_game, def_match_name_for_stats)
-        d_real = d_game.copy()
+        d_real = compute_defensive_stats(df_def_game_raw, def_match_name_for_stats)
         def_all = [compute_defensive_stats(defensive_dfs_by_match[m], m) for m in defensive_dfs_by_match]
         d_avg = {}
         if len(def_all) > 0:
@@ -2183,9 +2030,9 @@ with tab_dash:
                     ("% Duels Won", f"{d_game['duels_won_pct']:.2f}%", f"({d_real['duels_won']}/{d_real['total_duels']})"),
                 ])
             with col_ds3:
-                section_card("👁️ Interceptions", DEF_TONES[2], [
-                    ("Interceptions", f"{d_game['interceptions_p90']:.2f}"),
-                    ("Interceptions in Opp Field", f"{d_game['interceptions_attacking_p90']:.2f}"),
+                section_card("🛡️ Funnel Protection Actions", DEF_TONES[2], [
+                    ("Funnel Protection Actions", f"{d_game['funnel_actions_p90']:.2f}"),
+                    ("% FPA Successful", f"{d_game['funnel_success_pct']:.2f}%", f"({d_real['funnel_successful']}/{d_real['funnel_actions']})"),
                 ])
         else:
             with col_ds1:
@@ -2204,17 +2051,16 @@ with tab_dash:
                      f"({d_real['duels_won']}/{d_real['total_duels']})"),
                 ])
             with col_ds3:
-                cmp_section_card("👁️ Interceptions", DEF_TONES[2], [
-                    ("Interceptions", d_game["interceptions_p90"], f"{d_avg['interceptions_p90']:.1f}",
-                     f"{d_game['interceptions_p90']:.1f}", f"{d_avg['interceptions_p90']:.1f}", ""),
-                    ("Interceptions in Opp Field", d_game["interceptions_attacking_p90"], f"{d_avg['interceptions_attacking_p90']:.1f}",
-                     f"{d_game['interceptions_attacking_p90']:.1f}", f"{d_avg['interceptions_attacking_p90']:.1f}", ""),
+                cmp_section_card("🛡️ Funnel Protection Actions", DEF_TONES[2], [
+                    ("Funnel Protection Actions", d_game["funnel_actions_p90"], f"{d_avg['funnel_actions_p90']:.1f}",
+                     f"{d_game['funnel_actions_p90']:.1f}", f"{d_avg['funnel_actions_p90']:.1f}", ""),
+                    ("% FPA Successful", d_game["funnel_success_pct"], d_avg["funnel_success_pct"],
+                     f"{d_game['funnel_success_pct']:.1f}%", f"{d_avg['funnel_success_pct']:.1f}%", "",
+                     f"({d_real['funnel_successful']}/{d_real['funnel_actions']})"),
                 ])
 
     with sub_tab_off:
         st.markdown("### Match Filter")
-        if "selected_shot_id" not in st.session_state:
-            st.session_state.selected_shot_id = None
         col_of1, col_of2 = st.columns(2)
         with col_of1:
             off_match_options = ["All Matches"] + list(touches_dfs_by_match.keys())
@@ -2250,9 +2096,7 @@ with tab_dash:
         st.markdown("---")
         img_th_game, fig_th_game = draw_touches_heatmap(touches_game); plt.close(fig_th_game)
         img_od_game, fig_od_game = draw_offensive_duels_map(duels_game); plt.close(fig_od_game)
-        fig_sh_game, shot_lookup = draw_shots_map(
-            shots_game, selected_shot_id=st.session_state.get("selected_shot_id")
-        )
+        img_sh_game, fig_sh_game = draw_shots_map(shots_game); plt.close(fig_sh_game)
 
         col_om1, col_om2, col_om3 = st.columns(3)
         with col_om1:
@@ -2262,18 +2106,8 @@ with tab_dash:
             st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Offensive Duels Map</div>', unsafe_allow_html=True)
             st.image(img_od_game, use_container_width=True)
         with col_om3:
-            st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Shots Map <span style="font-size:11px;color:#888">(click a shot — goal appears below)</span></div>', unsafe_allow_html=True)
-            shot_event = st.plotly_chart(
-                fig_sh_game, use_container_width=True,
-                on_select="rerun", selection_mode="points", key="shots_map_select",
-            )
-            if shot_event and getattr(shot_event, "selection", None) and shot_event.selection.points:
-                pt = shot_event.selection.points[0]
-                key = (pt.get("curve_number"), pt.get("point_index"))
-                if key in shot_lookup:
-                    st.session_state.selected_shot_id = shot_lookup[key]
-            if st.button("Clear shot selection", key="clear_shot_sel"):
-                st.session_state.selected_shot_id = None
+            st.markdown('<div style="text-align:center;font-weight:600;font-size:14px;margin-bottom:6px;color:#cccccc">Shots Map</div>', unsafe_allow_html=True)
+            st.image(img_sh_game, use_container_width=True)
 
         st.markdown("", unsafe_allow_html=True)
         col_os1, col_os2, col_os3 = st.columns(3)
@@ -2424,5 +2258,4 @@ with tab_evo:
                 st.plotly_chart(draw_comparison_bar("Shots p90", first_o["shots_p90"].mean(), last_o["shots_p90"].mean(), category="offensive", n_first=n_eff, n_last=n_eff), use_container_width=True)
         else:
             st.warning("Not enough data to generate offensive evolution charts.")
-
 
