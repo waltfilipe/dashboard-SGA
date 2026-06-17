@@ -1114,10 +1114,13 @@ def _attack_arrow(fig, has_cbar=False):
     fig.text(0.50 + ox, 0.012, "Attacking Direction", ha="center", va="bottom",
              transform=fig.transFigure, fontsize=7.5, color="#aaaaaa")
 
-def _save_fig(fig):
+def _save_fig(fig, tight=True):
     fig.canvas.draw()
     buf = BytesIO()
-    fig.savefig(buf, format="png", dpi=FIG_DPI, facecolor=fig.get_facecolor(), bbox_inches="tight")
+    save_kwargs = dict(format="png", dpi=FIG_DPI, facecolor=fig.get_facecolor())
+    if tight:
+        save_kwargs["bbox_inches"] = "tight"
+    fig.savefig(buf, **save_kwargs)
     buf.seek(0)
     return Image.open(buf)
 
@@ -1402,21 +1405,12 @@ def draw_touches_heatmap(df):
     _attack_arrow(fig, has_cbar=True)
     return _save_fig(fig), fig
 
-def _base_attacking_half_pitch(bg="#1a1a2e"):
-    pitch = Pitch(
-        pitch_type="statsbomb", pitch_color=bg, line_color="#ffffff", line_alpha=0.95,
-        half=True,
-    )
-    fig, ax = pitch.draw(figsize=(FIG_W, FIG_H))
-    fig.set_facecolor(bg)
-    fig.set_dpi(FIG_DPI)
-    return fig, ax, pitch
-
-
 def draw_shots_map(df):
     """Attacking half-pitch with shot locations (same footprint as other pitch maps)."""
     df = df[df["x"] >= SHOT_HALF_X].copy()
-    fig, ax, pitch = _base_attacking_half_pitch()
+    fig, ax, pitch = _base_pitch()
+    ax.set_xlim(SHOT_HALF_X - 1.5, FIELD_X + 2.5)
+    ax.set_ylim(-2.5, FIELD_Y + 2.5)
     groups = [
         ("Goal", df[df["is_goal"]], COLOR_GOAL, "*", 220),
         ("On Target", df[(~df["is_goal"]) & (df["is_on_target"])], COLOR_SHOT_ON, "o", 90),
@@ -1446,7 +1440,7 @@ def draw_shots_map(df):
             t.set_color("white")
         leg.get_frame().set_alpha(0.90)
     _attack_arrow(fig)
-    return _save_fig(fig), fig
+    return _save_fig(fig, tight=False), fig
 
 # PLOTLY CHARTS
 def _avg_reference_traces(fig, x_labels, series, avg_mode, value_fmt):
@@ -1548,62 +1542,81 @@ def draw_metric_chart(df_scores, metric_label="Total Passes", avg_mode="Average"
 ELEGANT_CHART_ACCENTS = ["#3b82f6", "#10b981", "#a78bfa", "#f59e0b", "#38bdf8", "#f97316", "#ec4899", "#14b8a6", "#eab308"]
 ELEGANT_BOX_BORDER = "#3a3a50"
 
-def _evo_split(df, n):
-    """Split a match-ordered dataframe into first-N and last-N periods."""
+def _evo_split(df, n_window):
+    """Compare last n/2 matches vs the n/2 matches immediately before them."""
     total = len(df)
     if total == 0:
-        return df, df, 0
-    n = max(1, min(int(n), total // 2 if total >= 2 else 1))
-    if total < 2 * n:
-        n = max(1, total // 2)
-    return df.head(n), df.tail(n), n
+        return df.iloc[0:0], df.iloc[0:0], 0
+    n_window = max(2, int(n_window))
+    if n_window % 2 != 0:
+        n_window -= 1
+    if total < n_window:
+        n_window = total if total % 2 == 0 else total - 1
+    n_half = n_window // 2
+    if n_half == 0:
+        return df.iloc[0:0], df.iloc[0:0], 0
+    window = df.tail(n_window)
+    earlier = window.head(n_half)
+    recent = window.tail(n_half)
+    return earlier, recent, n_half
 
 
 def _elegant_comparison_bar(title, val_first, val_last, suffix="", category="passes", n_first=10, n_last=10):
-    """Elegant bar with uniform dark-gray card border and compact bars."""
+    """Elegant comparison card: previous window vs latest window."""
     improved = val_last >= val_first
-    pct_color = "#34d399" if improved else "#f87171"
     base = max(abs(val_first), 1e-9)
     delta_pct = (val_last - val_first) / base * 100.0
-    badge = f"▲ +{delta_pct:.0f}%" if improved else f"▼ {delta_pct:.0f}%"
-    y_top = max(val_first, val_last) * 1.35 if max(val_first, val_last) > 0 else 1.0
+    pct_color = "#34d399" if improved else "#f87171"
+    last_bar_color = "rgba(52,211,153,0.88)" if improved else "rgba(248,113,113,0.88)"
+    last_bar_edge = "#34d399" if improved else "#f87171"
+    badge = f"▲ +{delta_pct:.1f}%" if improved else f"▼ {delta_pct:.1f}%"
+    y_top = max(val_first, val_last) * 1.28 if max(val_first, val_last) > 0 else 1.0
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=[f"First {n_first}", f"Last {n_last}"],
+        x=[f"Prev {n_first}", f"Last {n_last}"],
         y=[val_first, val_last],
         marker=dict(
-            color=["rgba(148,163,184,0.42)", "rgba(148,163,184,0.62)"],
-            line=dict(color=[ELEGANT_BOX_BORDER, ELEGANT_BOX_BORDER], width=[1.2, 1.2]),
+            color=["rgba(148,163,184,0.38)", last_bar_color],
+            line=dict(
+                color=[ELEGANT_BOX_BORDER, last_bar_edge],
+                width=[1.0, 1.6],
+            ),
         ),
-        text=[f"{val_first:.2f}{suffix}", f"{val_last:.2f}{suffix}"],
+        text=[f"{val_first:.1f}{suffix}", f"{val_last:.1f}{suffix}"],
         textposition="outside",
-        textfont=dict(size=12, color="#ffffff"),
-        width=[0.24, 0.24],
-        hovertemplate="%{x}<br>" + title + ": %{y:.2f}" + suffix + "<extra></extra>",
+        textfont=dict(size=11, color="#eef1f7"),
+        width=[0.42, 0.42],
+        hovertemplate="%{x}<br>" + title + ": %{y:.1f}" + suffix + "<extra></extra>",
         cliponaxis=False,
     ))
     fig.add_annotation(
-        x=0.5, xref="paper", y=1.02, yref="paper", yanchor="bottom",
+        x=0.5, xref="paper", y=1.04, yref="paper", yanchor="bottom",
         text=f"<span style='color:{pct_color};font-weight:700'>{badge}</span>",
-        showarrow=False, font=dict(size=12), align="center",
+        showarrow=False, font=dict(size=11), align="center",
     )
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="#1a1a2e",
         plot_bgcolor="rgba(0,0,0,0)",
-        height=270,
-        margin=dict(l=14, r=14, t=58, b=28),
-        yaxis=dict(range=[0, y_top], showgrid=True, gridcolor="rgba(255,255,255,0.04)",
-                   gridwidth=1, zeroline=False, showticklabels=False, visible=False),
-        xaxis=dict(showgrid=False, zeroline=False, tickfont=dict(size=11, color="#c7cdda")),
-        title=dict(text=title, x=0.5, xanchor="center", font=dict(size=14, color="#eef1f7")),
+        height=255,
+        margin=dict(l=12, r=12, t=54, b=22),
+        yaxis=dict(
+            range=[0, y_top], showgrid=True, gridcolor="rgba(255,255,255,0.05)",
+            gridwidth=1, zeroline=False, showticklabels=False, visible=False,
+        ),
+        xaxis=dict(showgrid=False, zeroline=False, tickfont=dict(size=10, color="#c7cdda")),
+        title=dict(text=title, x=0.5, xanchor="center", font=dict(size=13, color="#eef1f7")),
         showlegend=False,
-        bargap=0.06,
+        bargap=0.02,
         shapes=[
-            dict(type="rect", xref="paper", yref="paper", x0=0, y0=0, x1=1, y1=1,
-                 line=dict(color=ELEGANT_BOX_BORDER, width=1.5), fillcolor="rgba(26,26,46,0.45)"),
-            dict(type="line", xref="paper", yref="paper", x0=0.04, y0=0.14, x1=0.96, y1=0.14,
-                 line=dict(color="rgba(255,255,255,0.08)", width=1)),
+            dict(
+                type="rect", xref="paper", yref="paper", x0=0, y0=0, x1=1, y1=1,
+                line=dict(color=ELEGANT_BOX_BORDER, width=1.2), fillcolor="rgba(26,26,46,0.50)",
+            ),
+            dict(
+                type="line", xref="paper", yref="paper", x0=0.08, y0=0.16, x1=0.92, y1=0.16,
+                line=dict(color="rgba(255,255,255,0.07)", width=1),
+            ),
         ],
     )
     return fig
@@ -1615,20 +1628,20 @@ def draw_comparison_bar(title, val_first, val_last, suffix="", elegant=None, cat
         elegant = ELEGANT_CHARTS
     if elegant:
         return _elegant_comparison_bar(title, val_first, val_last, suffix, category, n_first, n_last)
-    color_first = "#34d399" if val_first >= val_last else "#f87171"
-    color_last = "#34d399" if val_last >= val_first else "#f87171"
+    improved = val_last >= val_first
+    color_last = "#34d399" if improved else "#f87171"
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=[f"First {n_first} Matches", f"Last {n_last} Matches"],
+        x=[f"Prev {n_first}", f"Last {n_last}"],
         y=[val_first, val_last],
         marker=dict(
             color=["#444466", "#444466"],
-            line=dict(color=[color_first, color_last], width=[2.0, 2.0]),
+            line=dict(color=[ELEGANT_BOX_BORDER, color_last], width=[1.5, 2.0]),
         ),
-        text=[f"{val_first:.2f}{suffix}", f"{val_last:.2f}{suffix}"],
+        text=[f"{val_first:.1f}{suffix}", f"{val_last:.1f}{suffix}"],
         textposition='auto',
-        width=[0.38, 0.38],
-        hovertemplate="%{x}<br>" + title + ": %{y:.2f}" + suffix + "<extra></extra>",
+        width=[0.40, 0.40],
+        hovertemplate="%{x}<br>" + title + ": %{y:.1f}" + suffix + "<extra></extra>",
     ))
     fig.update_layout(
         template="plotly_dark", paper_bgcolor="#1a1a2e", plot_bgcolor="#1a1a2e",
@@ -1637,7 +1650,7 @@ def draw_comparison_bar(title, val_first, val_last, suffix="", elegant=None, cat
                    showgrid=True, gridcolor="rgba(255,255,255,0.05)", zeroline=False),
         xaxis=dict(showgrid=False, zeroline=False),
         title=dict(text=title, font=dict(size=14, color="#a0a0b5")),
-        showlegend=False, bargap=0.18,
+        showlegend=False, bargap=0.08,
     )
     return fig
 
@@ -2153,25 +2166,32 @@ with tab_dash:
 
 with tab_evo:
     ELEGANT_CHARTS = st.toggle("Gráficos elegantes", value=False, key="elegant_charts")
-    max_compare = max(1, num_matches // 2)
+    max_compare = num_matches if num_matches % 2 == 0 else max(2, num_matches - 1)
+    max_compare = max(2, max_compare)
     default_n = min(10, max_compare)
+    if default_n % 2 != 0:
+        default_n = max(2, default_n - 1)
     n_compare = st.slider(
-        "Matches per comparison period",
-        min_value=1, max_value=max_compare, value=default_n,
-        help="Compare the average of the first N matches vs the last N matches.",
+        "Janela de comparação (jogos)",
+        min_value=2, max_value=max_compare, value=default_n, step=2,
+        help="Compara os últimos N/2 jogos com os N/2 jogos imediatamente anteriores.",
         key="evo_n_compare",
     )
-    st.caption(f"Comparing **first {n_compare}** vs **last {n_compare}** matches (of {num_matches} total).")
+    n_half = n_compare // 2
+    st.caption(
+        f"Comparando os **últimos {n_half}** jogos com os **{n_half} anteriores** "
+        f"(janela de {n_compare} jogos, de {num_matches} no total)."
+    )
 
     sub_tab_evo_passes, sub_tab_evo_def, sub_tab_evo_off = st.tabs(["Passes", "Defensive Actions", "Offensive Actions"])
 
     with sub_tab_evo_passes:
-        st.markdown(f"### First {n_compare} vs Last {n_compare} Matches")
-        st.markdown("Compare average passing performance between the early and recent periods.")
+        st.markdown(f"### Últimos {n_half} vs {n_half} anteriores")
+        st.markdown("Compara a média dos últimos jogos com a média dos jogos imediatamente anteriores.")
         df_scores = compute_match_scores(dfs_by_match, defensive_dfs_by_match, OFF_DICTS)
         if len(df_scores) > 0:
-            if len(df_scores) < 2 * n_compare:
-                st.info(f"Note: Only {len(df_scores)} matches available — periods may overlap.")
+            if len(df_scores) < n_compare:
+                st.info(f"Nota: apenas {len(df_scores)} jogos disponíveis — a janela foi ajustada.")
             first_p, last_p, n_eff = _evo_split(df_scores, n_compare)
 
             r1c1, r1c2, r1c3 = st.columns(3)
@@ -2201,13 +2221,13 @@ with tab_evo:
             st.warning("Not enough data to generate evolution charts.")
 
     with sub_tab_evo_def:
-        st.markdown(f"### First {n_compare} vs Last {n_compare} Matches")
-        st.markdown("Compare average defensive performance between the early and recent periods.")
+        st.markdown(f"### Últimos {n_half} vs {n_half} anteriores")
+        st.markdown("Compara a média dos últimos jogos com a média dos jogos imediatamente anteriores.")
         df_scores = compute_match_scores(dfs_by_match, defensive_dfs_by_match, OFF_DICTS)
         df_def_evo = compute_defensive_evolution_df(defensive_dfs_by_match, df_scores)
         if len(df_def_evo) > 0:
-            if len(df_def_evo) < 2 * n_compare:
-                st.info(f"Note: Only {len(df_def_evo)} matches available — periods may overlap.")
+            if len(df_def_evo) < n_compare:
+                st.info(f"Nota: apenas {len(df_def_evo)} jogos disponíveis — a janela foi ajustada.")
             first_d, last_d, n_eff = _evo_split(df_def_evo, n_compare)
 
             rd1c1, rd1c2, rd1c3 = st.columns(3)
@@ -2233,12 +2253,12 @@ with tab_evo:
             st.warning("Not enough data to generate defensive evolution charts.")
 
     with sub_tab_evo_off:
-        st.markdown(f"### First {n_compare} vs Last {n_compare} Matches")
-        st.markdown("Compare average offensive performance between the early and recent periods.")
+        st.markdown(f"### Últimos {n_half} vs {n_half} anteriores")
+        st.markdown("Compara a média dos últimos jogos com a média dos jogos imediatamente anteriores.")
         df_scores = compute_match_scores(dfs_by_match, defensive_dfs_by_match, OFF_DICTS)
         if len(df_scores) > 0:
-            if len(df_scores) < 2 * n_compare:
-                st.info(f"Note: Only {len(df_scores)} matches available — periods may overlap.")
+            if len(df_scores) < n_compare:
+                st.info(f"Nota: apenas {len(df_scores)} jogos disponíveis — a janela foi ajustada.")
             first_o, last_o, n_eff = _evo_split(df_scores, n_compare)
 
             ro1c1, ro1c2, ro1c3 = st.columns(3)
